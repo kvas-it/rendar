@@ -132,25 +132,26 @@ fn rewrite_link_dest<'a>(
         return CowStr::from(dest);
     }
 
-    let (resolved, relative_dir) = resolve_link_path(&base, source_path, input_root);
-    if is_markdown_path(&base) {
+    let normalized_base = normalize_link_path(&base);
+    let (resolved, relative_dir) = resolve_link_path(&normalized_base, source_path, input_root);
+    if is_markdown_path(&normalized_base) {
         if !resolved.exists() {
             warnings.push(format!(
                 "Missing link target: {} referenced from {}",
-                base,
+                normalized_base,
                 source_path.display()
             ));
         }
-        let replacement = replace_markdown_extension(&base);
-        let mut replacement = if is_readme_path(&base) {
+        let replacement = replace_markdown_extension(&normalized_base);
+        let mut replacement = if is_readme_path(&normalized_base) {
             let parent = relative_dir.unwrap_or_else(PathBuf::new);
             if index_dirs.contains(&parent) {
                 replacement
             } else {
-                readme_to_index(&base)
+                readme_to_index(&normalized_base)
             }
-        } else if is_index_path(&base) {
-            replace_markdown_extension(&base)
+        } else if is_index_path(&normalized_base) {
+            replace_markdown_extension(&normalized_base)
         } else {
             replacement
         };
@@ -280,6 +281,44 @@ fn readme_to_index(dest: &str) -> String {
     }
     base.push_str("index.html");
     base
+}
+
+fn normalize_link_path(path: &str) -> String {
+    let is_absolute = path.starts_with('/');
+    let mut parts: Vec<String> = Vec::new();
+    for component in Path::new(path).components() {
+        match component {
+            std::path::Component::RootDir => {}
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if let Some(last) = parts.last() {
+                    if last != ".." {
+                        parts.pop();
+                    } else if !is_absolute {
+                        parts.push("..".to_string());
+                    }
+                } else if !is_absolute {
+                    parts.push("..".to_string());
+                }
+            }
+            std::path::Component::Normal(os) => {
+                parts.push(os.to_string_lossy().to_string());
+            }
+            _ => {}
+        }
+    }
+
+    if is_absolute {
+        if parts.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", parts.join("/"))
+        }
+    } else if parts.is_empty() {
+        ".".to_string()
+    } else {
+        parts.join("/")
+    }
 }
 
 fn markdown_options(for_title_only: bool) -> Options {
@@ -431,5 +470,67 @@ graph TD;
             markdown_to_html_with_rewrites(markdown, &source, input_root, &index_dirs);
         assert!(warnings.is_empty());
         assert!(html.contains(r#"README.html"#));
+    }
+
+    #[test]
+    fn rewrites_markdown_extension_for_markdown_files() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let input_root = root.path();
+        let docs_dir = input_root.join("docs");
+        std::fs::create_dir_all(&docs_dir).expect("docs dir");
+        std::fs::write(docs_dir.join("note.markdown"), "# Note").expect("note");
+
+        let markdown = r#"[Note](note.markdown)"#;
+        let source = docs_dir.join("index.md");
+        let index_dirs = std::collections::HashSet::new();
+        let (html, warnings) =
+            markdown_to_html_with_rewrites(markdown, &source, input_root, &index_dirs);
+        assert!(warnings.is_empty());
+        assert!(html.contains("note.html"));
+    }
+
+    #[test]
+    fn normalizes_dot_segments_in_links() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let input_root = root.path();
+        let docs_dir = input_root.join("docs");
+        let guide_dir = input_root.join("guide");
+        std::fs::create_dir_all(&docs_dir).expect("docs dir");
+        std::fs::create_dir_all(&guide_dir).expect("guide dir");
+        std::fs::write(guide_dir.join("intro.md"), "# Intro").expect("intro");
+
+        let markdown = r#"[Guide](../guide/./extra/../intro.md)"#;
+        let source = docs_dir.join("index.md");
+        let index_dirs = std::collections::HashSet::new();
+        let (html, warnings) =
+            markdown_to_html_with_rewrites(markdown, &source, input_root, &index_dirs);
+        assert!(warnings.is_empty());
+        assert!(html.contains("../guide/intro.html"));
+    }
+
+    #[test]
+    fn ignores_fragment_only_links() {
+        let markdown = r#"[Section](#part)"#;
+        let (html, warnings) =
+            markdown_to_html_with_rewrites(markdown, Path::new("."), Path::new("."), &std::collections::HashSet::new());
+        assert!(warnings.is_empty());
+        assert!(html.contains(r#"#part"#));
+    }
+
+    #[test]
+    fn rewrites_dot_slash_readme() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let input_root = root.path();
+        let docs_dir = input_root.join("docs");
+        std::fs::create_dir_all(&docs_dir).expect("docs dir");
+        std::fs::write(docs_dir.join("README.md"), "# Docs").expect("readme");
+
+        let markdown = r#"[Docs](./README.md)"#;
+        let source = docs_dir.join("intro.md");
+        let index_dirs = std::collections::HashSet::new();
+        let (html, warnings) =
+            markdown_to_html_with_rewrites(markdown, &source, input_root, &index_dirs);
+        assert!(warnings.is_empty());
+        assert!(html.contains("index.html"));
     }
 }
