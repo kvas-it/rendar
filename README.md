@@ -11,7 +11,7 @@ cargo run -- preview --open
 ## Commands
 - `build --out <dir> [--input <dir>] [--template <file>] [--config <file>]`
 - `check [--input <dir>] [--config <file>]`
-- `preview [--input <dir>] [--template <file>] [--config <file>] [--open] [--port <port>]`
+- `preview [--input <dir>] [--template <file>] [--config <file>] [--start-on <path>] [--open] [--port <port>]`
 
 ## Config (Optional)
 Create `rendar.toml` in the working directory:
@@ -54,3 +54,7 @@ The built-in template ships with a minimal theme, Mermaid.js, and KaTeX. Custom 
 - Each page includes a left sidebar with sibling pages and subfolders that have an index or README.
 - Breadcrumbs are shown at the top and skip folders without an index/README.
 - Page titles are taken from the first Markdown heading when present.
+
+## Preview Start Page
+- Use `--start-on` to open a specific Markdown file or directory when previewing.
+- If `--input` is omitted and the start page is outside the current directory, rendar auto-detects the root by walking upward through folders with an index/README.

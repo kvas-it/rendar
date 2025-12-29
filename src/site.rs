@@ -169,6 +169,22 @@ fn is_index(path: &Path) -> bool {
         && is_markdown(path)
 }
 
+pub fn output_rel_path(
+    path: &Path,
+    input_root: &Path,
+    index_dirs: &HashSet<PathBuf>,
+) -> Option<PathBuf> {
+    if !is_markdown(path) {
+        return None;
+    }
+    let rel = path.strip_prefix(input_root).ok()?;
+    if is_readme(path) && should_write_index(path, input_root, index_dirs) {
+        Some(rel.parent().unwrap_or(Path::new("")).join("index.html"))
+    } else {
+        Some(rel.with_extension("html"))
+    }
+}
+
 fn write_html(path: &Path, content: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -227,6 +243,20 @@ fn build_site_map(input: &Path) -> SiteMap {
         index_dirs,
         landing_dirs,
     }
+}
+
+pub fn collect_index_dirs(input: &Path) -> HashSet<PathBuf> {
+    let mut dirs = HashSet::new();
+    for entry in WalkDir::new(input).into_iter().filter_map(Result::ok) {
+        if entry.file_type().is_file() && is_index(entry.path()) {
+            if let Ok(rel) = entry.path().parent().unwrap_or(input).strip_prefix(input) {
+                dirs.insert(rel.to_path_buf());
+            } else {
+                dirs.insert(PathBuf::new());
+            }
+        }
+    }
+    dirs
 }
 
 fn should_write_index(path: &Path, input: &Path, index_dirs: &HashSet<PathBuf>) -> bool {
