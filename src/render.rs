@@ -44,8 +44,7 @@ pub fn render_markdown_file(
 ) -> Result<RenderedPage> {
     let markdown = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read markdown file {}", path.display()))?;
-    let (html, warnings, _title) =
-        markdown_to_html_with_rewrites(&markdown, path, input_root, index_dirs);
+    let (html, warnings) = markdown_to_html_with_rewrites(&markdown, path, input_root, index_dirs);
     Ok(RenderedPage {
         html: rewrite_mermaid_blocks(&html),
         warnings,
@@ -84,11 +83,9 @@ fn markdown_to_html_with_rewrites(
     source_path: &Path,
     input_root: &Path,
     index_dirs: &std::collections::HashSet<PathBuf>,
-) -> (String, Vec<String>, Option<String>) {
+) -> (String, Vec<String>) {
     let options = markdown_options(false);
     let mut warnings = Vec::new();
-    let mut title = None;
-    let mut in_heading = false;
     let parser = Parser::new_ext(markdown, options).map(|event| match event {
         Event::Start(Tag::Link {
             link_type,
@@ -107,51 +104,12 @@ fn markdown_to_html_with_rewrites(
             title,
             id,
         }),
-        Event::Start(Tag::Heading { .. }) => {
-            if title.is_none() {
-                title = Some(String::new());
-                in_heading = true;
-            }
-            event
-        }
-        Event::Text(ref text) if in_heading => {
-            if let Some(current) = title.as_mut() {
-                current.push_str(text.as_ref());
-            }
-            event
-        }
-        Event::Code(ref text) if in_heading => {
-            if let Some(current) = title.as_mut() {
-                current.push_str(text.as_ref());
-            }
-            event
-        }
-        Event::SoftBreak | Event::HardBreak if in_heading => {
-            if let Some(current) = title.as_mut() {
-                if !current.ends_with(' ') {
-                    current.push(' ');
-                }
-            }
-            event
-        }
-        Event::End(TagEnd::Heading(_)) if in_heading => {
-            in_heading = false;
-            if let Some(current) = title.as_mut() {
-                let trimmed = current.trim().to_string();
-                if trimmed.is_empty() {
-                    title = None;
-                } else {
-                    *current = trimmed;
-                }
-            }
-            event
-        }
         _ => event,
     });
 
     let mut html_output = String::new();
     html::push_html(&mut html_output, parser);
-    (html_output, warnings, title)
+    (html_output, warnings)
 }
 
 fn rewrite_link_dest<'a>(
@@ -352,7 +310,7 @@ graph TD;
 ```
 "#;
         let index_dirs = std::collections::HashSet::new();
-        let (html, _warnings, _title) =
+        let (html, _warnings) =
             markdown_to_html_with_rewrites(markdown, Path::new("."), Path::new("."), &index_dirs);
         let rewritten = rewrite_mermaid_blocks(&html);
         assert!(rewritten.contains(r#"<pre class="mermaid">"#));
@@ -373,7 +331,7 @@ graph TD;
         let source = docs_dir.join("index.md");
         let mut index_dirs = std::collections::HashSet::new();
         index_dirs.insert(PathBuf::from("docs"));
-        let (html, warnings, _title) =
+        let (html, warnings) =
             markdown_to_html_with_rewrites(markdown, &source, input_root, &index_dirs);
         assert!(warnings.is_empty());
         assert!(html.contains("guide/intro.html"));
@@ -390,7 +348,7 @@ graph TD;
         let markdown = r#"[Missing](missing.md)"#;
         let source = docs_dir.join("index.md");
         let index_dirs = std::collections::HashSet::new();
-        let (_html, warnings, _title) =
+        let (_html, warnings) =
             markdown_to_html_with_rewrites(markdown, &source, input_root, &index_dirs);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("missing.md"));
@@ -399,8 +357,79 @@ graph TD;
     #[test]
     fn uses_first_heading_as_title() {
         let markdown = "# First Title\n\n## Second Title\n";
-        let (_html, _warnings, title) =
-            markdown_to_html_with_rewrites(markdown, Path::new("."), Path::new("."), &std::collections::HashSet::new());
+        let title = first_heading_title(markdown);
         assert_eq!(title.as_deref(), Some("First Title"));
+    }
+
+    #[test]
+    fn rewrites_absolute_markdown_links() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let input_root = root.path();
+        let guide_dir = input_root.join("guide");
+        std::fs::create_dir_all(&guide_dir).expect("guide dir");
+        std::fs::write(guide_dir.join("intro.md"), "# Intro").expect("intro");
+
+        let markdown = r#"[Guide](/guide/intro.md)"#;
+        let source = input_root.join("docs/index.md");
+        let index_dirs = std::collections::HashSet::new();
+        let (html, warnings) =
+            markdown_to_html_with_rewrites(markdown, &source, input_root, &index_dirs);
+        assert!(warnings.is_empty());
+        assert!(html.contains(r#"/guide/intro.html"#));
+    }
+
+    #[test]
+    fn rewrites_relative_markdown_links_with_fragments() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let input_root = root.path();
+        let docs_dir = input_root.join("docs");
+        let guide_dir = input_root.join("guide");
+        std::fs::create_dir_all(&docs_dir).expect("docs dir");
+        std::fs::create_dir_all(&guide_dir).expect("guide dir");
+        std::fs::write(guide_dir.join("intro.md"), "# Intro").expect("intro");
+
+        let markdown = r#"[Guide](../guide/intro.md#part)"#;
+        let source = docs_dir.join("index.md");
+        let index_dirs = std::collections::HashSet::new();
+        let (html, warnings) =
+            markdown_to_html_with_rewrites(markdown, &source, input_root, &index_dirs);
+        assert!(warnings.is_empty());
+        assert!(html.contains(r#"../guide/intro.html#part"#));
+    }
+
+    #[test]
+    fn rewrites_readme_to_index_when_no_index() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let input_root = root.path();
+        let docs_dir = input_root.join("docs");
+        std::fs::create_dir_all(&docs_dir).expect("docs dir");
+        std::fs::write(docs_dir.join("README.md"), "# Docs").expect("readme");
+
+        let markdown = r#"[Docs](README.md)"#;
+        let source = docs_dir.join("intro.md");
+        let index_dirs = std::collections::HashSet::new();
+        let (html, warnings) =
+            markdown_to_html_with_rewrites(markdown, &source, input_root, &index_dirs);
+        assert!(warnings.is_empty());
+        assert!(html.contains(r#"index.html"#));
+    }
+
+    #[test]
+    fn keeps_readme_html_when_index_exists() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let input_root = root.path();
+        let docs_dir = input_root.join("docs");
+        std::fs::create_dir_all(&docs_dir).expect("docs dir");
+        std::fs::write(docs_dir.join("README.md"), "# Docs").expect("readme");
+        std::fs::write(docs_dir.join("index.md"), "# Index").expect("index");
+
+        let markdown = r#"[Docs](README.md)"#;
+        let source = docs_dir.join("intro.md");
+        let mut index_dirs = std::collections::HashSet::new();
+        index_dirs.insert(PathBuf::from("docs"));
+        let (html, warnings) =
+            markdown_to_html_with_rewrites(markdown, &source, input_root, &index_dirs);
+        assert!(warnings.is_empty());
+        assert!(html.contains(r#"README.html"#));
     }
 }

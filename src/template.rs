@@ -46,6 +46,17 @@ impl Template {
 }
 
 fn warn_missing_placeholders(template: &str, path: &Path) {
+    let missing = missing_placeholders(template);
+    if !missing.is_empty() {
+        eprintln!(
+            "Warning: template {} is missing placeholders: {}",
+            path.display(),
+            missing.join(", ")
+        );
+    }
+}
+
+fn missing_placeholders(template: &str) -> Vec<&'static str> {
     let required = [
         "{{title}}",
         "{{content}}",
@@ -58,11 +69,19 @@ fn warn_missing_placeholders(template: &str, path: &Path) {
             missing.push(*placeholder);
         }
     }
-    if !missing.is_empty() {
-        eprintln!(
-            "Warning: template {} is missing placeholders: {}",
-            path.display(),
-            missing.join(", ")
-        );
+    missing
+}
+
+#[cfg(test)]
+mod tests {
+    use super::missing_placeholders;
+
+    #[test]
+    fn detects_missing_placeholders() {
+        let template = "<html>{{title}}</html>";
+        let missing = missing_placeholders(template);
+        assert!(missing.contains(&"{{content}}"));
+        assert!(missing.contains(&"{{nav}}"));
+        assert!(missing.contains(&"{{breadcrumbs}}"));
     }
 }
