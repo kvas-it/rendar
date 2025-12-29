@@ -1,8 +1,9 @@
 use crate::render::render_markdown_file;
 use crate::template::Template;
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 pub struct RenderOptions<'a> {
@@ -13,6 +14,8 @@ pub struct RenderOptions<'a> {
 pub fn build_site(input: &Path, output: &Path, options: &RenderOptions<'_>) -> Result<()> {
     std::fs::create_dir_all(output)
         .with_context(|| format!("Failed to create output directory {}", output.display()))?;
+
+    let index_dirs = collect_index_dirs(input);
 
     for entry in WalkDir::new(input).into_iter().filter_map(Result::ok) {
         let path = entry.path();
@@ -43,7 +46,7 @@ pub fn build_site(input: &Path, output: &Path, options: &RenderOptions<'_>) -> R
         }
 
         if is_markdown(path) {
-            let body_html = render_markdown_file(path)?;
+            let rendered = render_markdown_file(path, input, &index_dirs)?;
             let title = path
                 .file_stem()
                 .and_then(OsStr::to_str)
@@ -55,19 +58,18 @@ pub fn build_site(input: &Path, output: &Path, options: &RenderOptions<'_>) -> R
             };
             let full_html = options
                 .template
-                .render(title, &body_html, None, extra_body);
+                .render(title, &rendered.html, None, extra_body);
             let out_path = output.join(rel_path).with_extension("html");
-            if let Some(parent) = out_path.parent() {
-                std::fs::create_dir_all(parent).with_context(|| {
-                    format!(
-                        "Failed to create output directory {}",
-                        parent.display()
-                    )
-                })?;
+            write_html(&out_path, &full_html)?;
+            if is_readme(path) {
+                if should_write_index(path, input, &index_dirs) {
+                    let index_path = output.join(rel_path.parent().unwrap_or(Path::new(""))).join("index.html");
+                    write_html(&index_path, &full_html)?;
+                }
             }
-            std::fs::write(&out_path, full_html).with_context(|| {
-                format!("Failed to write output file {}", out_path.display())
-            })?;
+            for warning in rendered.warnings {
+                eprintln!("Warning: {warning}");
+            }
         } else {
             let out_path = output.join(rel_path);
             if let Some(parent) = out_path.parent() {
@@ -99,6 +101,51 @@ fn is_markdown(path: &Path) -> bool {
             .as_deref(),
         Some("md") | Some("markdown")
     )
+}
+
+fn is_readme(path: &Path) -> bool {
+    path.file_stem()
+        .and_then(OsStr::to_str)
+        .map(|stem| stem.eq_ignore_ascii_case("readme"))
+        .unwrap_or(false)
+        && is_markdown(path)
+}
+
+fn is_index(path: &Path) -> bool {
+    path.file_stem()
+        .and_then(OsStr::to_str)
+        .map(|stem| stem.eq_ignore_ascii_case("index"))
+        .unwrap_or(false)
+        && is_markdown(path)
+}
+
+fn write_html(path: &Path, content: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create output directory {}", parent.display()))?;
+    }
+    std::fs::write(path, content)
+        .with_context(|| format!("Failed to write output file {}", path.display()))
+}
+
+fn collect_index_dirs(input: &Path) -> HashSet<PathBuf> {
+    let mut dirs = HashSet::new();
+    for entry in WalkDir::new(input).into_iter().filter_map(Result::ok) {
+        if entry.file_type().is_file() && is_index(entry.path()) {
+            if let Ok(rel) = entry.path().parent().unwrap_or(input).strip_prefix(input) {
+                dirs.insert(rel.to_path_buf());
+            } else {
+                dirs.insert(PathBuf::new());
+            }
+        }
+    }
+    dirs
+}
+
+fn should_write_index(path: &Path, input: &Path, index_dirs: &HashSet<PathBuf>) -> bool {
+    let parent = path.parent().unwrap_or(input);
+    let rel = parent.strip_prefix(input).unwrap_or(parent);
+    !index_dirs.contains(rel)
 }
 
 fn is_within(path: &Path, root: &Path) -> bool {

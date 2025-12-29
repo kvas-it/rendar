@@ -40,3 +40,8 @@ The built-in template ships with a minimal theme, Mermaid.js, and KaTeX. Custom 
 - `  A-->B;`
 - ` ````
 - Math via KaTeX with `$...$` or `$$...$$`.
+
+## Linking Behavior
+- Links to `.md` files are rewritten to `.html` during render.
+- `README.md` acts as the default page for a folder when no `index.md` exists.
+- Local Markdown links that point to missing files emit a warning at render time.
