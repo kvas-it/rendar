@@ -42,7 +42,7 @@ The built-in template ships with a minimal theme, Mermaid.js, and KaTeX. Custom 
 - `graph TD;`
 - `  A-->B;`
 - ` ````
-- Math via KaTeX with `$...$` or `$$...$$`.
+- Math via KaTeX with `\(...\)` or `$$...$$`.
 
 ## Linking Behavior
 - Links to `.md` files are rewritten to `.html` during render.
