@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use pulldown_cmark::{html, CowStr, Event, Options, Parser, Tag};
+use pulldown_cmark::{html, CowStr, Event, Options, Parser, Tag, TagEnd};
 use std::path::{Path, PathBuf};
 
 pub struct RenderedPage {
@@ -7,21 +7,36 @@ pub struct RenderedPage {
     pub warnings: Vec<String>,
 }
 
-pub fn markdown_to_html(markdown: &str) -> String {
+pub fn first_heading_title(markdown: &str) -> Option<String> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_GFM);
-    options.insert(Options::ENABLE_TABLES);
-    options.insert(Options::ENABLE_STRIKETHROUGH);
-    options.insert(Options::ENABLE_TASKLISTS);
-    options.insert(Options::ENABLE_FOOTNOTES);
-    options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
     options.insert(Options::ENABLE_SMART_PUNCTUATION);
-    options.insert(Options::ENABLE_MATH);
-
     let parser = Parser::new_ext(markdown, options);
-    let mut html_output = String::new();
-    html::push_html(&mut html_output, parser);
-    html_output
+
+    let mut in_heading = false;
+    let mut buffer = String::new();
+
+    for event in parser {
+        match event {
+            Event::Start(Tag::Heading { .. }) => {
+                in_heading = true;
+                buffer.clear();
+            }
+            Event::End(TagEnd::Heading(_)) if in_heading => {
+                let title = buffer.trim().to_string();
+                if !title.is_empty() {
+                    return Some(title);
+                }
+                in_heading = false;
+            }
+            Event::Text(text) if in_heading => buffer.push_str(text.as_ref()),
+            Event::Code(text) if in_heading => buffer.push_str(text.as_ref()),
+            Event::SoftBreak | Event::HardBreak if in_heading => buffer.push(' '),
+            _ => {}
+        }
+    }
+
+    None
 }
 
 pub fn render_markdown_file(
@@ -290,7 +305,9 @@ graph TD;
   A-->B;
 ```
 "#;
-        let html = markdown_to_html(markdown);
+        let index_dirs = std::collections::HashSet::new();
+        let (html, _warnings) =
+            markdown_to_html_with_rewrites(markdown, Path::new("."), Path::new("."), &index_dirs);
         let rewritten = rewrite_mermaid_blocks(&html);
         assert!(rewritten.contains(r#"<pre class="mermaid">"#));
         assert!(rewritten.contains("graph TD;"));

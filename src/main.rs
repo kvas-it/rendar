@@ -35,6 +35,15 @@ enum Command {
         #[arg(long)]
         template: Option<PathBuf>,
     },
+    /// Check for broken links and other warnings without writing output.
+    Check {
+        /// Input directory to scan (defaults to current directory).
+        #[arg(short, long)]
+        input: Option<PathBuf>,
+        /// Optional config file path (e.g., rendar.toml).
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+    },
     /// Start a local preview server with live reload.
     Preview {
         /// Input directory to render (defaults to current directory).
@@ -64,6 +73,7 @@ fn main() -> Result<()> {
             config,
             template,
         } => run_build(out, input, config, template),
+        Command::Check { input, config } => run_check(input, config),
         Command::Preview {
             input,
             config,
@@ -95,6 +105,18 @@ fn run_build(
         },
     )?;
     println!("Rendered site to {}", out.display());
+    Ok(())
+}
+
+fn run_check(input: Option<PathBuf>, config: Option<PathBuf>) -> Result<()> {
+    let config = config::load_config(config.as_deref())?;
+    let input = input
+        .or_else(|| config.as_ref().and_then(|cfg| cfg.input.clone()))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let warnings = site::check_site(&input)?;
+    if warnings > 0 {
+        std::process::exit(1);
+    }
     Ok(())
 }
 

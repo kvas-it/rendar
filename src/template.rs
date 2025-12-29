@@ -27,12 +27,16 @@ impl Template {
         &self,
         title: &str,
         content: &str,
+        nav: &str,
+        breadcrumbs: &str,
         extra_head: Option<&str>,
         extra_body: Option<&str>,
     ) -> String {
         let mut html = self.raw.clone();
         html = html.replace("{{title}}", title);
         html = html.replace("{{content}}", content);
+        html = html.replace("{{nav}}", nav);
+        html = html.replace("{{breadcrumbs}}", breadcrumbs);
         html = html.replace("{{style}}", &self.style);
         html = html.replace("{{extra_head}}", extra_head.unwrap_or(""));
         html = html.replace("{{extra_body}}", extra_body.unwrap_or(""));

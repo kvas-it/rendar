@@ -14,9 +14,19 @@
   {{extra_head}}
 </head>
 <body>
-  <main class="content">
-    {{content}}
-  </main>
+  <div class="layout">
+    <aside class="sidebar">
+      {{nav}}
+    </aside>
+    <div class="main">
+      <div class="breadcrumbs">
+        {{breadcrumbs}}
+      </div>
+      <main class="content">
+        {{content}}
+      </main>
+    </div>
+  </div>
   <script>
     document.addEventListener("DOMContentLoaded", function () {
       if (window.mermaid) {

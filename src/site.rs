@@ -1,7 +1,7 @@
-use crate::render::render_markdown_file;
+use crate::render::{first_heading_title, render_markdown_file};
 use crate::template::Template;
 use anyhow::{Context, Result};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -11,11 +11,27 @@ pub struct RenderOptions<'a> {
     pub template: &'a Template,
 }
 
+#[derive(Clone)]
+struct PageEntry {
+    rel_path: PathBuf,
+    output_rel: PathBuf,
+    title: String,
+    is_index: bool,
+    is_readme: bool,
+}
+
+struct SiteMap {
+    pages_by_dir: HashMap<PathBuf, Vec<PageEntry>>,
+    pages_by_path: HashMap<PathBuf, PageEntry>,
+    index_dirs: HashSet<PathBuf>,
+    landing_dirs: HashSet<PathBuf>,
+}
+
 pub fn build_site(input: &Path, output: &Path, options: &RenderOptions<'_>) -> Result<()> {
     std::fs::create_dir_all(output)
         .with_context(|| format!("Failed to create output directory {}", output.display()))?;
 
-    let index_dirs = collect_index_dirs(input);
+    let site_map = build_site_map(input);
 
     for entry in WalkDir::new(input).into_iter().filter_map(Result::ok) {
         let path = entry.path();
@@ -46,24 +62,36 @@ pub fn build_site(input: &Path, output: &Path, options: &RenderOptions<'_>) -> R
         }
 
         if is_markdown(path) {
-            let rendered = render_markdown_file(path, input, &index_dirs)?;
-            let title = path
-                .file_stem()
-                .and_then(OsStr::to_str)
-                .unwrap_or("Document");
+            let rendered = render_markdown_file(path, input, &site_map.index_dirs)?;
+            let rel_path = rel_path.to_path_buf();
+            let page_entry = match site_map.pages_by_path.get(&rel_path) {
+                Some(entry) => entry,
+                None => continue,
+            };
             let extra_body = if options.live_reload {
                 Some(live_reload_script())
             } else {
                 None
             };
+            let nav_html = build_nav_html(page_entry, &site_map);
+            let breadcrumbs_html = build_breadcrumbs_html(page_entry, &site_map);
             let full_html = options
                 .template
-                .render(title, &rendered.html, None, extra_body);
-            let out_path = output.join(rel_path).with_extension("html");
+                .render(
+                    &page_entry.title,
+                    &rendered.html,
+                    &nav_html,
+                    &breadcrumbs_html,
+                    None,
+                    extra_body,
+                );
+            let out_path = output.join(&page_entry.output_rel);
             write_html(&out_path, &full_html)?;
-            if is_readme(path) {
-                if should_write_index(path, input, &index_dirs) {
-                    let index_path = output.join(rel_path.parent().unwrap_or(Path::new(""))).join("index.html");
+            if page_entry.is_readme {
+                if should_write_index(path, input, &site_map.index_dirs) {
+                    let index_path = output
+                        .join(rel_path.parent().unwrap_or(Path::new("")))
+                        .join("index.html");
                     write_html(&index_path, &full_html)?;
                 }
             }
@@ -91,6 +119,28 @@ pub fn build_site(input: &Path, output: &Path, options: &RenderOptions<'_>) -> R
     }
 
     Ok(())
+}
+
+pub fn check_site(input: &Path) -> Result<usize> {
+    let site_map = build_site_map(input);
+    let mut warnings = 0usize;
+
+    for entry in WalkDir::new(input).into_iter().filter_map(Result::ok) {
+        let path = entry.path();
+        if path == input {
+            continue;
+        }
+
+        if is_markdown(path) {
+            let rendered = render_markdown_file(path, input, &site_map.index_dirs)?;
+            for warning in rendered.warnings {
+                eprintln!("Warning: {warning}");
+                warnings += 1;
+            }
+        }
+    }
+
+    Ok(warnings)
 }
 
 fn is_markdown(path: &Path) -> bool {
@@ -128,24 +178,240 @@ fn write_html(path: &Path, content: &str) -> Result<()> {
         .with_context(|| format!("Failed to write output file {}", path.display()))
 }
 
-fn collect_index_dirs(input: &Path) -> HashSet<PathBuf> {
-    let mut dirs = HashSet::new();
+fn build_site_map(input: &Path) -> SiteMap {
+    let mut pages_by_dir: HashMap<PathBuf, Vec<PageEntry>> = HashMap::new();
+    let mut pages_by_path: HashMap<PathBuf, PageEntry> = HashMap::new();
+    let mut index_dirs = HashSet::new();
+    let mut landing_dirs = HashSet::new();
+
     for entry in WalkDir::new(input).into_iter().filter_map(Result::ok) {
-        if entry.file_type().is_file() && is_index(entry.path()) {
-            if let Ok(rel) = entry.path().parent().unwrap_or(input).strip_prefix(input) {
-                dirs.insert(rel.to_path_buf());
-            } else {
-                dirs.insert(PathBuf::new());
+        if entry.file_type().is_file() && is_markdown(entry.path()) {
+            let path = entry.path();
+            let rel_path = match path.strip_prefix(input) {
+                Ok(rel) => rel.to_path_buf(),
+                Err(_) => continue,
+            };
+            let rel_dir = rel_path.parent().unwrap_or(Path::new("")).to_path_buf();
+            let is_index = is_index(path);
+            let is_readme = is_readme(path);
+            let title = title_from_markdown(path);
+            let output_rel = rel_path.with_extension("html");
+            let page = PageEntry {
+                rel_path: rel_path.clone(),
+                output_rel,
+                title,
+                is_index,
+                is_readme,
+            };
+            pages_by_dir
+                .entry(rel_dir.clone())
+                .or_default()
+                .push(page.clone());
+            pages_by_path.insert(rel_path, page);
+            if is_index {
+                index_dirs.insert(rel_dir.clone());
+            }
+            if is_index || is_readme {
+                landing_dirs.insert(rel_dir);
             }
         }
     }
-    dirs
+
+    for pages in pages_by_dir.values_mut() {
+        pages.sort_by(|a, b| a.title.cmp(&b.title));
+    }
+
+    SiteMap {
+        pages_by_dir,
+        pages_by_path,
+        index_dirs,
+        landing_dirs,
+    }
 }
 
 fn should_write_index(path: &Path, input: &Path, index_dirs: &HashSet<PathBuf>) -> bool {
     let parent = path.parent().unwrap_or(input);
     let rel = parent.strip_prefix(input).unwrap_or(parent);
     !index_dirs.contains(rel)
+}
+
+fn build_nav_html(current: &PageEntry, site_map: &SiteMap) -> String {
+    let current_dir = current.rel_path.parent().unwrap_or(Path::new(""));
+    let from_dir = current.output_rel.parent().unwrap_or(Path::new(""));
+    let mut nav = String::new();
+
+    let pages = site_map.pages_by_dir.get(current_dir);
+    let mut page_items = Vec::new();
+    if let Some(pages) = pages {
+        for page in pages {
+            if page.rel_path == current.rel_path {
+                continue;
+            }
+            let href = relative_link(from_dir, &page.output_rel);
+            let label = html_escape(&page.title);
+            page_items.push(format!(r#"<li><a href="{}">{}</a></li>"#, href, label));
+        }
+    }
+
+    let mut folder_items = Vec::new();
+    for dir in &site_map.landing_dirs {
+        if dir == current_dir {
+            continue;
+        }
+        if dir.parent().unwrap_or(Path::new("")) == current_dir {
+            let folder_label = display_dir_name(dir);
+            let target = dir.join("index.html");
+            let href = relative_link(from_dir, &target);
+            folder_items.push(format!(
+                r#"<li><a href="{}">{}</a></li>"#,
+                href,
+                html_escape(&folder_label)
+            ));
+        }
+    }
+    folder_items.sort();
+
+    if !page_items.is_empty() {
+        nav.push_str(r#"<div class="nav-section">"#);
+        nav.push_str(r#"<div class="nav-title">Pages</div>"#);
+        nav.push_str(r#"<ul class="nav-list">"#);
+        for item in page_items {
+            nav.push_str(&item);
+        }
+        nav.push_str("</ul></div>");
+    }
+
+    if !folder_items.is_empty() {
+        nav.push_str(r#"<div class="nav-section">"#);
+        nav.push_str(r#"<div class="nav-title">Folders</div>"#);
+        nav.push_str(r#"<ul class="nav-list">"#);
+        for item in folder_items {
+            nav.push_str(&item);
+        }
+        nav.push_str("</ul></div>");
+    }
+
+    nav
+}
+
+fn build_breadcrumbs_html(current: &PageEntry, site_map: &SiteMap) -> String {
+    let mut crumbs = Vec::new();
+    let current_dir = current.rel_path.parent().unwrap_or(Path::new(""));
+    let from_dir = current.output_rel.parent().unwrap_or(Path::new(""));
+    let is_landing = current.is_index || current.is_readme;
+
+    let ancestors = ancestor_dirs(current_dir);
+    for dir in ancestors {
+        if dir == current_dir && is_landing {
+            continue;
+        }
+        if site_map.landing_dirs.contains(&dir) {
+            let label = if dir.as_os_str().is_empty() {
+                "Home".to_string()
+            } else {
+                display_dir_name(&dir)
+            };
+            let target = dir.join("index.html");
+            let href = relative_link(from_dir, &target);
+            crumbs.push(format!(
+                r#"<a href="{}">{}</a>"#,
+                href,
+                html_escape(&label)
+            ));
+        }
+    }
+
+    crumbs.push(format!(r#"<span>{}</span>"#, html_escape(&current.title)));
+
+    let mut html = String::new();
+    for (idx, crumb) in crumbs.iter().enumerate() {
+        if idx > 0 {
+            html.push_str(r#"<span class="sep">/</span>"#);
+        }
+        html.push_str(crumb);
+    }
+    html
+}
+
+fn ancestor_dirs(dir: &Path) -> Vec<PathBuf> {
+    let mut ancestors = Vec::new();
+    let mut current = PathBuf::new();
+    ancestors.push(PathBuf::new());
+    for component in dir.components() {
+        current.push(component.as_os_str());
+        ancestors.push(current.clone());
+    }
+    ancestors
+}
+
+fn relative_link(from_dir: &Path, target: &Path) -> String {
+    let from_parts = path_parts(from_dir);
+    let to_parts = path_parts(target);
+    let mut common = 0usize;
+    while common < from_parts.len()
+        && common < to_parts.len()
+        && from_parts[common] == to_parts[common]
+    {
+        common += 1;
+    }
+
+    let mut parts = Vec::new();
+    for _ in common..from_parts.len() {
+        parts.push("..".to_string());
+    }
+    for part in &to_parts[common..] {
+        parts.push(part.clone());
+    }
+
+    if parts.is_empty() {
+        ".".to_string()
+    } else {
+        parts.join("/")
+    }
+}
+
+fn path_parts(path: &Path) -> Vec<String> {
+    path.components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(os) => Some(os.to_string_lossy().to_string()),
+            std::path::Component::ParentDir => Some("..".to_string()),
+            std::path::Component::CurDir => None,
+            _ => None,
+        })
+        .collect()
+}
+
+fn title_from_markdown(path: &Path) -> String {
+    if let Ok(contents) = std::fs::read_to_string(path) {
+        if let Some(title) = first_heading_title(&contents) {
+            return title;
+        }
+    }
+    display_title(path)
+}
+
+fn display_title(path: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("Document");
+    stem.replace(['-', '_'], " ")
+}
+
+fn display_dir_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or("Folder")
+        .replace(['-', '_'], " ")
+}
+
+fn html_escape(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 fn is_within(path: &Path, root: &Path) -> bool {
@@ -217,6 +483,8 @@ mod tests {
         let html = std::fs::read_to_string(html_path).expect("read html");
         assert!(html.contains("<!doctype html>"));
         assert!(html.contains("Hello"));
+        assert!(html.contains("class=\"sidebar\""));
+        assert!(html.contains("class=\"breadcrumbs\""));
 
         let asset_path = output_dir.path().join("assets/logo.txt");
         let asset = std::fs::read_to_string(asset_path).expect("read asset");

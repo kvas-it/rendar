@@ -10,6 +10,7 @@ cargo run -- preview --open
 
 ## Commands
 - `build --out <dir> [--input <dir>] [--template <file>] [--config <file>]`
+- `check [--input <dir>] [--config <file>]`
 - `preview [--input <dir>] [--template <file>] [--config <file>] [--open] [--port <port>]`
 
 ## Config (Optional)
@@ -29,6 +30,8 @@ CLI flags override config values when provided.
 The built-in template ships with a minimal theme, Mermaid.js, and KaTeX. Custom templates can use these placeholders:
 - `{{title}}` page title (defaults to the Markdown filename)
 - `{{content}}` rendered Markdown HTML
+- `{{nav}}` sidebar navigation HTML
+- `{{breadcrumbs}}` breadcrumbs HTML
 - `{{style}}` built‑in CSS (empty for custom templates)
 - `{{extra_head}}` and `{{extra_body}}` internal hooks for preview reload
 
@@ -45,3 +48,9 @@ The built-in template ships with a minimal theme, Mermaid.js, and KaTeX. Custom 
 - Links to `.md` files are rewritten to `.html` during render.
 - `README.md` acts as the default page for a folder when no `index.md` exists.
 - Local Markdown links that point to missing files emit a warning at render time.
+- `check` prints warnings only and exits with status 1 when any are found.
+
+## Navigation
+- Each page includes a left sidebar with sibling pages and subfolders that have an index or README.
+- Breadcrumbs are shown at the top and skip folders without an index/README.
+- Page titles are taken from the first Markdown heading when present.
