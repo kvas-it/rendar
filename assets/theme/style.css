@@ -1,23 +1,21 @@
-@import url("https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@400;600;700&family=Source+Code+Pro:wght@400;600&display=swap");
-
 :root {
   color-scheme: light;
-  --bg: #f5f2ec;
-  --fg: #1f1c18;
-  --muted: #6a625a;
+  --bg: #ffffff;
+  --fg: #1d1d1f;
+  --muted: #6b6b6f;
   --accent: #0f6f6f;
   --card: #ffffff;
-  --border: #e0d9d0;
-  --code-bg: #f0ece6;
-  --sidebar-bg: #ede6dd;
-  --sidebar-border: #d9cfc4;
+  --border: #e0e0e0;
+  --code-bg: #f3f3f3;
+  --sidebar-bg: #f1f1f1;
+  --sidebar-border: #d4d4d4;
 }
 
 body {
   margin: 0;
-  background: linear-gradient(180deg, #f7f3ee 0%, #efe8df 100%);
+  background: var(--bg);
   color: var(--fg);
-  font-family: "Crimson Pro", serif;
+  font-family: sans-serif;
   line-height: 1.6;
 }
 
@@ -101,11 +99,7 @@ body {
 .content {
   max-width: 840px;
   margin: 0;
-  background: var(--card);
-  padding: 48px 56px;
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  box-shadow: 0 24px 60px rgba(31, 28, 24, 0.08);
+  padding: 12px 0 48px;
 }
 
 @media (max-width: 720px) {
@@ -153,14 +147,14 @@ a:hover {
 }
 
 code, pre {
-  font-family: "Source Code Pro", monospace;
+  font-family: monospace;
   font-size: 0.92rem;
 }
 
 pre {
   background: var(--code-bg);
   padding: 16px;
-  border-radius: 12px;
+  border-radius: 6px;
   overflow-x: auto;
   border: 1px solid var(--border);
 }
@@ -168,7 +162,7 @@ pre {
 code {
   background: var(--code-bg);
   padding: 2px 6px;
-  border-radius: 6px;
+  border-radius: 4px;
 }
 
 blockquote {
