@@ -539,4 +539,65 @@ mod tests {
         assert!(breadcrumbs.contains("Guide"));
         assert!(breadcrumbs.contains("Extra"));
     }
+
+    #[test]
+    fn excludes_current_folder_from_nav_folders() {
+        let input_dir = tempdir().expect("input tempdir");
+        let docs_dir = input_dir.path().join("docs");
+        std::fs::create_dir_all(&docs_dir).expect("docs dir");
+
+        let guide_dir = docs_dir.join("guide");
+        std::fs::create_dir_all(&guide_dir).expect("guide dir");
+        std::fs::write(guide_dir.join("index.md"), "# Guide").expect("guide index");
+
+        let current_path = guide_dir.join("page.md");
+        std::fs::write(&current_path, "# Page").expect("page");
+
+        let sub_dir = guide_dir.join("sub");
+        std::fs::create_dir_all(&sub_dir).expect("sub dir");
+        std::fs::write(sub_dir.join("README.md"), "# Subsection").expect("sub readme");
+        let site_map = build_site_map(input_dir.path());
+        let current = site_map
+            .pages_by_path
+            .get(&PathBuf::from("docs/guide/page.md"))
+            .expect("current page");
+
+        let nav = build_nav_html(current, &site_map);
+        assert!(nav.contains("Subsection"));
+        assert_eq!(nav.matches("Guide</a>").count(), 1);
+    }
+
+    #[test]
+    fn sorts_pages_and_folders_by_title() {
+        let input_dir = tempdir().expect("input tempdir");
+        let docs_dir = input_dir.path().join("docs");
+        std::fs::create_dir_all(&docs_dir).expect("docs dir");
+        std::fs::write(docs_dir.join("README.md"), "# Docs").expect("docs readme");
+
+        std::fs::write(docs_dir.join("zeta.md"), "# Zeta").expect("zeta");
+        std::fs::write(docs_dir.join("alpha.md"), "# Alpha").expect("alpha");
+
+        let alpha_dir = docs_dir.join("alpha-folder");
+        std::fs::create_dir_all(&alpha_dir).expect("alpha dir");
+        std::fs::write(alpha_dir.join("README.md"), "# Alpha Folder").expect("alpha readme");
+
+        let zeta_dir = docs_dir.join("zeta-folder");
+        std::fs::create_dir_all(&zeta_dir).expect("zeta dir");
+        std::fs::write(zeta_dir.join("README.md"), "# Zeta Folder").expect("zeta readme");
+
+        let site_map = build_site_map(input_dir.path());
+        let current = site_map
+            .pages_by_path
+            .get(&PathBuf::from("docs/README.md"))
+            .expect("current page");
+
+        let nav = build_nav_html(current, &site_map);
+        let alpha_index = nav.find("Alpha</a>").expect("alpha page");
+        let zeta_index = nav.find("Zeta</a>").expect("zeta page");
+        assert!(alpha_index < zeta_index);
+
+        let alpha_folder = nav.find("Alpha Folder</a>").expect("alpha folder");
+        let zeta_folder = nav.find("Zeta Folder</a>").expect("zeta folder");
+        assert!(alpha_folder < zeta_folder);
+    }
 }

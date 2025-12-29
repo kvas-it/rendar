@@ -91,10 +91,8 @@ fn run_build(
     template: Option<PathBuf>,
 ) -> Result<()> {
     let config = config::load_config(config.as_deref())?;
-    let input = input
-        .or_else(|| config.as_ref().and_then(|cfg| cfg.input.clone()))
-        .unwrap_or_else(|| PathBuf::from("."));
-    let template = template.or_else(|| config.as_ref().and_then(|cfg| cfg.template.clone()));
+    let input = resolve_input(input, config.as_ref());
+    let template = resolve_template(template, config.as_ref());
     let template = load_template(template)?;
     site::build_site(
         &input,
@@ -110,9 +108,7 @@ fn run_build(
 
 fn run_check(input: Option<PathBuf>, config: Option<PathBuf>) -> Result<()> {
     let config = config::load_config(config.as_deref())?;
-    let input = input
-        .or_else(|| config.as_ref().and_then(|cfg| cfg.input.clone()))
-        .unwrap_or_else(|| PathBuf::from("."));
+    let input = resolve_input(input, config.as_ref());
     let warnings = site::check_site(&input)?;
     if warnings > 0 {
         std::process::exit(1);
@@ -128,10 +124,8 @@ fn run_preview(
     port: Option<u16>,
 ) -> Result<()> {
     let config = config::load_config(config.as_deref())?;
-    let input = input
-        .or_else(|| config.as_ref().and_then(|cfg| cfg.input.clone()))
-        .unwrap_or_else(|| PathBuf::from("."));
-    let template = template.or_else(|| config.as_ref().and_then(|cfg| cfg.template.clone()));
+    let input = resolve_input(input, config.as_ref());
+    let template = resolve_template(template, config.as_ref());
     let template = load_template(template)?;
     let temp_dir = tempfile::tempdir().context("Failed to create preview directory")?;
     let output = temp_dir.path().to_path_buf();
@@ -160,25 +154,10 @@ fn run_preview(
         }
     });
 
-    let port = port
-        .or_else(|| {
-            config
-                .as_ref()
-                .and_then(|cfg| cfg.preview.as_ref())
-                .and_then(|preview| preview.port)
-        })
-        .unwrap_or(3000);
+    let port = resolve_preview_port(port, config.as_ref());
     let address = format!("127.0.0.1:{}", port);
     println!("Preview server running at http://{address}");
-    let open = if open {
-        true
-    } else {
-        config
-            .as_ref()
-            .and_then(|cfg| cfg.preview.as_ref())
-            .and_then(|preview| preview.open)
-            .unwrap_or(false)
-    };
+    let open = resolve_preview_open(open, config.as_ref());
     if open {
         open_browser(&format!("http://{address}"));
     }
@@ -236,6 +215,39 @@ fn load_template(path: Option<PathBuf>) -> Result<template::Template> {
     }
 }
 
+fn resolve_input(input: Option<PathBuf>, config: Option<&config::Config>) -> PathBuf {
+    input
+        .or_else(|| config.and_then(|cfg| cfg.input.clone()))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn resolve_template(
+    template: Option<PathBuf>,
+    config: Option<&config::Config>,
+) -> Option<PathBuf> {
+    template.or_else(|| config.and_then(|cfg| cfg.template.clone()))
+}
+
+fn resolve_preview_port(port: Option<u16>, config: Option<&config::Config>) -> u16 {
+    port.or_else(|| {
+        config
+            .and_then(|cfg| cfg.preview.as_ref())
+            .and_then(|preview| preview.port)
+    })
+    .unwrap_or(3000)
+}
+
+fn resolve_preview_open(open: bool, config: Option<&config::Config>) -> bool {
+    if open {
+        true
+    } else {
+        config
+            .and_then(|cfg| cfg.preview.as_ref())
+            .and_then(|preview| preview.open)
+            .unwrap_or(false)
+    }
+}
+
 async fn serve_preview(
     output: PathBuf,
     version: Arc<AtomicU64>,
@@ -281,4 +293,71 @@ fn open_browser(url: &str) {
 
     command.arg(url);
     let _ = command.spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, PreviewConfig};
+
+    #[test]
+    fn resolves_input_with_cli_override() {
+        let config = Config {
+            input: Some(PathBuf::from("config-input")),
+            template: None,
+            preview: None,
+        };
+        let resolved = resolve_input(Some(PathBuf::from("cli-input")), Some(&config));
+        assert_eq!(resolved, PathBuf::from("cli-input"));
+    }
+
+    #[test]
+    fn resolves_template_with_config_fallback() {
+        let config = Config {
+            input: None,
+            template: Some(PathBuf::from("config-template.html")),
+            preview: None,
+        };
+        let resolved = resolve_template(None, Some(&config));
+        assert_eq!(resolved, Some(PathBuf::from("config-template.html")));
+    }
+
+    #[test]
+    fn resolves_preview_port_with_cli_override() {
+        let config = Config {
+            input: None,
+            template: None,
+            preview: Some(PreviewConfig {
+                port: Some(4000),
+                open: None,
+            }),
+        };
+        let resolved = resolve_preview_port(Some(5000), Some(&config));
+        assert_eq!(resolved, 5000);
+    }
+
+    #[test]
+    fn resolves_preview_open_with_config_fallback() {
+        let config = Config {
+            input: None,
+            template: None,
+            preview: Some(PreviewConfig {
+                port: None,
+                open: Some(true),
+            }),
+        };
+        let resolved = resolve_preview_open(false, Some(&config));
+        assert!(resolved);
+    }
+
+    #[test]
+    fn resolves_preview_port_default_when_unset() {
+        let config = Config {
+            input: None,
+            template: None,
+            preview: None,
+        };
+        let resolved = resolve_preview_port(None, Some(&config));
+        assert_eq!(resolved, 3000);
+    }
 }
