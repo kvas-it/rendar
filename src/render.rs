@@ -8,9 +8,7 @@ pub struct RenderedPage {
 }
 
 pub fn first_heading_title(markdown: &str) -> Option<String> {
-    let mut options = Options::empty();
-    options.insert(Options::ENABLE_GFM);
-    options.insert(Options::ENABLE_SMART_PUNCTUATION);
+    let options = markdown_options(true);
     let parser = Parser::new_ext(markdown, options);
 
     let mut in_heading = false;
@@ -46,7 +44,8 @@ pub fn render_markdown_file(
 ) -> Result<RenderedPage> {
     let markdown = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read markdown file {}", path.display()))?;
-    let (html, warnings) = markdown_to_html_with_rewrites(&markdown, path, input_root, index_dirs);
+    let (html, warnings, _title) =
+        markdown_to_html_with_rewrites(&markdown, path, input_root, index_dirs);
     Ok(RenderedPage {
         html: rewrite_mermaid_blocks(&html),
         warnings,
@@ -85,18 +84,11 @@ fn markdown_to_html_with_rewrites(
     source_path: &Path,
     input_root: &Path,
     index_dirs: &std::collections::HashSet<PathBuf>,
-) -> (String, Vec<String>) {
-    let mut options = Options::empty();
-    options.insert(Options::ENABLE_GFM);
-    options.insert(Options::ENABLE_TABLES);
-    options.insert(Options::ENABLE_STRIKETHROUGH);
-    options.insert(Options::ENABLE_TASKLISTS);
-    options.insert(Options::ENABLE_FOOTNOTES);
-    options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
-    options.insert(Options::ENABLE_SMART_PUNCTUATION);
-    options.insert(Options::ENABLE_MATH);
-
+) -> (String, Vec<String>, Option<String>) {
+    let options = markdown_options(false);
     let mut warnings = Vec::new();
+    let mut title = None;
+    let mut in_heading = false;
     let parser = Parser::new_ext(markdown, options).map(|event| match event {
         Event::Start(Tag::Link {
             link_type,
@@ -115,12 +107,51 @@ fn markdown_to_html_with_rewrites(
             title,
             id,
         }),
+        Event::Start(Tag::Heading { .. }) => {
+            if title.is_none() {
+                title = Some(String::new());
+                in_heading = true;
+            }
+            event
+        }
+        Event::Text(ref text) if in_heading => {
+            if let Some(current) = title.as_mut() {
+                current.push_str(text.as_ref());
+            }
+            event
+        }
+        Event::Code(ref text) if in_heading => {
+            if let Some(current) = title.as_mut() {
+                current.push_str(text.as_ref());
+            }
+            event
+        }
+        Event::SoftBreak | Event::HardBreak if in_heading => {
+            if let Some(current) = title.as_mut() {
+                if !current.ends_with(' ') {
+                    current.push(' ');
+                }
+            }
+            event
+        }
+        Event::End(TagEnd::Heading(_)) if in_heading => {
+            in_heading = false;
+            if let Some(current) = title.as_mut() {
+                let trimmed = current.trim().to_string();
+                if trimmed.is_empty() {
+                    title = None;
+                } else {
+                    *current = trimmed;
+                }
+            }
+            event
+        }
         _ => event,
     });
 
     let mut html_output = String::new();
     html::push_html(&mut html_output, parser);
-    (html_output, warnings)
+    (html_output, warnings, title)
 }
 
 fn rewrite_link_dest<'a>(
@@ -293,6 +324,21 @@ fn readme_to_index(dest: &str) -> String {
     base
 }
 
+fn markdown_options(for_title_only: bool) -> Options {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_GFM);
+    options.insert(Options::ENABLE_SMART_PUNCTUATION);
+    if !for_title_only {
+        options.insert(Options::ENABLE_TABLES);
+        options.insert(Options::ENABLE_STRIKETHROUGH);
+        options.insert(Options::ENABLE_TASKLISTS);
+        options.insert(Options::ENABLE_FOOTNOTES);
+        options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
+        options.insert(Options::ENABLE_MATH);
+    }
+    options
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,7 +352,7 @@ graph TD;
 ```
 "#;
         let index_dirs = std::collections::HashSet::new();
-        let (html, _warnings) =
+        let (html, _warnings, _title) =
             markdown_to_html_with_rewrites(markdown, Path::new("."), Path::new("."), &index_dirs);
         let rewritten = rewrite_mermaid_blocks(&html);
         assert!(rewritten.contains(r#"<pre class="mermaid">"#));
@@ -327,7 +373,7 @@ graph TD;
         let source = docs_dir.join("index.md");
         let mut index_dirs = std::collections::HashSet::new();
         index_dirs.insert(PathBuf::from("docs"));
-        let (html, warnings) =
+        let (html, warnings, _title) =
             markdown_to_html_with_rewrites(markdown, &source, input_root, &index_dirs);
         assert!(warnings.is_empty());
         assert!(html.contains("guide/intro.html"));
@@ -344,9 +390,17 @@ graph TD;
         let markdown = r#"[Missing](missing.md)"#;
         let source = docs_dir.join("index.md");
         let index_dirs = std::collections::HashSet::new();
-        let (_html, warnings) =
+        let (_html, warnings, _title) =
             markdown_to_html_with_rewrites(markdown, &source, input_root, &index_dirs);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("missing.md"));
+    }
+
+    #[test]
+    fn uses_first_heading_as_title() {
+        let markdown = "# First Title\n\n## Second Title\n";
+        let (_html, _warnings, title) =
+            markdown_to_html_with_rewrites(markdown, Path::new("."), Path::new("."), &std::collections::HashSet::new());
+        assert_eq!(title.as_deref(), Some("First Title"));
     }
 }

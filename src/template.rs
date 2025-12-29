@@ -17,6 +17,7 @@ impl Template {
     pub fn from_path(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read template {}", path.display()))?;
+        warn_missing_placeholders(&raw, path);
         Ok(Self {
             raw,
             style: String::new(),
@@ -41,5 +42,27 @@ impl Template {
         html = html.replace("{{extra_head}}", extra_head.unwrap_or(""));
         html = html.replace("{{extra_body}}", extra_body.unwrap_or(""));
         html
+    }
+}
+
+fn warn_missing_placeholders(template: &str, path: &Path) {
+    let required = [
+        "{{title}}",
+        "{{content}}",
+        "{{nav}}",
+        "{{breadcrumbs}}",
+    ];
+    let mut missing = Vec::new();
+    for placeholder in &required {
+        if !template.contains(placeholder) {
+            missing.push(*placeholder);
+        }
+    }
+    if !missing.is_empty() {
+        eprintln!(
+            "Warning: template {} is missing placeholders: {}",
+            path.display(),
+            missing.join(", ")
+        );
     }
 }

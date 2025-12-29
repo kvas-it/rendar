@@ -259,7 +259,7 @@ fn build_nav_html(current: &PageEntry, site_map: &SiteMap) -> String {
             continue;
         }
         if dir.parent().unwrap_or(Path::new("")) == current_dir {
-            let folder_label = display_dir_name(dir);
+            let folder_label = landing_title(dir, site_map).unwrap_or_else(|| display_dir_name(dir));
             let target = dir.join("index.html");
             let href = relative_link(from_dir, &target);
             folder_items.push(format!(
@@ -309,7 +309,7 @@ fn build_breadcrumbs_html(current: &PageEntry, site_map: &SiteMap) -> String {
             let label = if dir.as_os_str().is_empty() {
                 "Home".to_string()
             } else {
-                display_dir_name(&dir)
+                landing_title(&dir, site_map).unwrap_or_else(|| display_dir_name(&dir))
             };
             let target = dir.join("index.html");
             let href = relative_link(from_dir, &target);
@@ -405,6 +405,17 @@ fn display_dir_name(path: &Path) -> String {
         .replace(['-', '_'], " ")
 }
 
+fn landing_title(dir: &Path, site_map: &SiteMap) -> Option<String> {
+    let pages = site_map.pages_by_dir.get(dir)?;
+    if let Some(index) = pages.iter().find(|page| page.is_index) {
+        return Some(index.title.clone());
+    }
+    if let Some(readme) = pages.iter().find(|page| page.is_readme) {
+        return Some(readme.title.clone());
+    }
+    None
+}
+
 fn html_escape(input: &str) -> String {
     input
         .replace('&', "&amp;")
@@ -489,5 +500,43 @@ mod tests {
         let asset_path = output_dir.path().join("assets/logo.txt");
         let asset = std::fs::read_to_string(asset_path).expect("read asset");
         assert_eq!(asset, "logo");
+    }
+
+    #[test]
+    fn builds_nav_and_breadcrumbs() {
+        let input_dir = tempdir().expect("input tempdir");
+
+        std::fs::write(input_dir.path().join("README.md"), "# Root").expect("root readme");
+        let docs_dir = input_dir.path().join("docs");
+        std::fs::create_dir_all(&docs_dir).expect("docs dir");
+        std::fs::write(docs_dir.join("README.md"), "# Docs").expect("docs readme");
+        std::fs::write(docs_dir.join("intro.md"), "# Intro").expect("intro");
+
+        let guide_dir = docs_dir.join("guide");
+        std::fs::create_dir_all(&guide_dir).expect("guide dir");
+        std::fs::write(guide_dir.join("index.md"), "# Guide").expect("guide index");
+        std::fs::write(guide_dir.join("extra.md"), "# Extra").expect("extra page");
+
+        let sub_dir = guide_dir.join("sub");
+        std::fs::create_dir_all(&sub_dir).expect("sub dir");
+        std::fs::write(sub_dir.join("README.md"), "# Subsection").expect("sub readme");
+
+        let site_map = build_site_map(input_dir.path());
+        let current = site_map
+            .pages_by_path
+            .get(&PathBuf::from("docs/guide/extra.md"))
+            .expect("current page");
+
+        let nav = build_nav_html(current, &site_map);
+        assert!(nav.contains("Pages"));
+        assert!(nav.contains("Guide"));
+        assert!(!nav.contains("intro.html"));
+        assert!(nav.contains("Subsection"));
+
+        let breadcrumbs = build_breadcrumbs_html(current, &site_map);
+        assert!(breadcrumbs.contains("Home"));
+        assert!(breadcrumbs.contains("Docs"));
+        assert!(breadcrumbs.contains("Guide"));
+        assert!(breadcrumbs.contains("Extra"));
     }
 }
