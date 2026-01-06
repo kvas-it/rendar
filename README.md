@@ -61,3 +61,4 @@ The built-in template ships with a minimal theme, Mermaid.js, and KaTeX. Custom 
 ## Preview Start Page
 - Use `--start-on` to open a specific Markdown file or directory when previewing.
 - If `--input` is omitted and the start page is outside the current directory, rendar auto-detects the root by walking upward through folders with an index/README.
+- When using the default port 3000, rendar will pick a random available port if 3000 is already in use.

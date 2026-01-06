@@ -195,7 +195,8 @@ fn run_preview(
         }
     });
 
-    let port = resolve_preview_port(port, config.as_ref());
+    let preferred_port = resolve_preview_port(port, config.as_ref());
+    let (listener, port) = bind_preview_listener(preferred_port)?;
     let address = format!("127.0.0.1:{}", port);
     let start_url = if let Some(start_page) = start_page.as_ref() {
         let index_dirs = site::collect_index_dirs(&input, excludes.as_ref());
@@ -214,7 +215,9 @@ fn run_preview(
 
     let rt = tokio::runtime::Runtime::new().context("Failed to start async runtime")?;
     rt.block_on(async move {
-        serve_preview(output, version, &address).await
+        let listener = tokio::net::TcpListener::from_std(listener)
+            .context("Failed to use preview listener")?;
+        serve_preview(output, version, listener).await
     })
 }
 
@@ -287,6 +290,39 @@ fn resolve_preview_port(port: Option<u16>, config: Option<&config::Config>) -> u
             .and_then(|preview| preview.port)
     })
     .unwrap_or(3000)
+}
+
+fn bind_preview_listener(preferred_port: u16) -> Result<(std::net::TcpListener, u16)> {
+    let address = ("127.0.0.1", preferred_port);
+    let listener = match std::net::TcpListener::bind(address) {
+        Ok(listener) => listener,
+        Err(_err) if preferred_port == 3000 => {
+            let fallback = std::net::TcpListener::bind(("127.0.0.1", 0)).with_context(|| {
+                format!(
+                    "Failed to bind preview server on {} and auto-select fallback port",
+                    preferred_port
+                )
+            })?;
+            eprintln!("Port {} is in use, picked a random available port.", preferred_port);
+            fallback
+        }
+        Err(err) => {
+            return Err(anyhow::anyhow!(
+                "Failed to bind preview server on {}: {}",
+                preferred_port,
+                err
+            ));
+        }
+    };
+
+    listener
+        .set_nonblocking(true)
+        .context("Failed to set preview listener to non-blocking")?;
+    let local_addr = listener
+        .local_addr()
+        .context("Failed to read preview listener address")?;
+    let port = local_addr.port();
+    Ok((listener, port))
 }
 
 fn resolve_preview_open(open: bool, config: Option<&config::Config>) -> bool {
@@ -485,7 +521,7 @@ fn path_to_url(path: &Path) -> String {
 async fn serve_preview(
     output: PathBuf,
     version: Arc<AtomicU64>,
-    address: &str,
+    listener: tokio::net::TcpListener,
 ) -> Result<()> {
     use axum::{routing::get, Router};
     use tower_http::services::ServeDir;
@@ -496,9 +532,6 @@ async fn serve_preview(
         .nest_service("/", ServeDir::new(output).append_index_html_on_directories(true))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(address)
-        .await
-        .context("Failed to bind preview server")?;
     axum::serve(listener, app).await.context("Preview server failed")
 }
 
