@@ -1,6 +1,7 @@
 use crate::render::{first_heading_title, render_markdown_file};
 use crate::template::Template;
 use anyhow::{Context, Result};
+use globset::GlobSet;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -9,6 +10,7 @@ use walkdir::WalkDir;
 pub struct RenderOptions<'a> {
     pub live_reload: bool,
     pub template: &'a Template,
+    pub exclude: Option<&'a GlobSet>,
 }
 
 #[derive(Clone)]
@@ -31,9 +33,9 @@ pub fn build_site(input: &Path, output: &Path, options: &RenderOptions<'_>) -> R
     std::fs::create_dir_all(output)
         .with_context(|| format!("Failed to create output directory {}", output.display()))?;
 
-    let site_map = build_site_map(input);
+    let site_map = build_site_map(input, options.exclude);
 
-    for entry in WalkDir::new(input).into_iter().filter_map(Result::ok) {
+    for entry in walk_entries(input, options.exclude) {
         let path = entry.path();
         if path == input {
             continue;
@@ -121,11 +123,11 @@ pub fn build_site(input: &Path, output: &Path, options: &RenderOptions<'_>) -> R
     Ok(())
 }
 
-pub fn check_site(input: &Path) -> Result<usize> {
-    let site_map = build_site_map(input);
+pub fn check_site(input: &Path, excludes: Option<&GlobSet>) -> Result<usize> {
+    let site_map = build_site_map(input, excludes);
     let mut warnings = 0usize;
 
-    for entry in WalkDir::new(input).into_iter().filter_map(Result::ok) {
+    for entry in walk_entries(input, excludes) {
         let path = entry.path();
         if path == input {
             continue;
@@ -151,6 +153,23 @@ fn is_markdown(path: &Path) -> bool {
             .as_deref(),
         Some("md") | Some("markdown")
     )
+}
+
+pub fn is_excluded_path(path: &Path, input: &Path, excludes: Option<&GlobSet>) -> bool {
+    let Some(excludes) = excludes else {
+        return false;
+    };
+    if path == input {
+        return false;
+    }
+    let rel_path = match path.strip_prefix(input) {
+        Ok(rel) => rel,
+        Err(_) => return false,
+    };
+    if rel_path.as_os_str().is_empty() {
+        return false;
+    }
+    excludes.is_match(rel_path)
 }
 
 fn is_readme(path: &Path) -> bool {
@@ -194,13 +213,13 @@ fn write_html(path: &Path, content: &str) -> Result<()> {
         .with_context(|| format!("Failed to write output file {}", path.display()))
 }
 
-fn build_site_map(input: &Path) -> SiteMap {
+fn build_site_map(input: &Path, excludes: Option<&GlobSet>) -> SiteMap {
     let mut pages_by_dir: HashMap<PathBuf, Vec<PageEntry>> = HashMap::new();
     let mut pages_by_path: HashMap<PathBuf, PageEntry> = HashMap::new();
     let mut index_dirs = HashSet::new();
     let mut landing_dirs = HashSet::new();
 
-    for entry in WalkDir::new(input).into_iter().filter_map(Result::ok) {
+    for entry in walk_entries(input, excludes) {
         if entry.file_type().is_file() && is_markdown(entry.path()) {
             let path = entry.path();
             let rel_path = match path.strip_prefix(input) {
@@ -245,9 +264,25 @@ fn build_site_map(input: &Path) -> SiteMap {
     }
 }
 
-pub fn collect_index_dirs(input: &Path) -> HashSet<PathBuf> {
+fn walk_entries<'a>(
+    input: &'a Path,
+    excludes: Option<&'a GlobSet>,
+) -> impl Iterator<Item = walkdir::DirEntry> + 'a {
+    WalkDir::new(input)
+        .into_iter()
+        .filter_entry(move |entry| {
+            let path = entry.path();
+            if path == input {
+                return true;
+            }
+            !is_excluded_path(path, input, excludes)
+        })
+        .filter_map(Result::ok)
+}
+
+pub fn collect_index_dirs(input: &Path, excludes: Option<&GlobSet>) -> HashSet<PathBuf> {
     let mut dirs = HashSet::new();
-    for entry in WalkDir::new(input).into_iter().filter_map(Result::ok) {
+    for entry in walk_entries(input, excludes) {
         if entry.file_type().is_file() && is_index(entry.path()) {
             if let Ok(rel) = entry.path().parent().unwrap_or(input).strip_prefix(input) {
                 dirs.insert(rel.to_path_buf());
@@ -516,6 +551,7 @@ mod tests {
             &RenderOptions {
                 live_reload: false,
                 template: &template,
+                exclude: None,
             },
         )
         .expect("build site");
@@ -530,6 +566,45 @@ mod tests {
         let asset_path = output_dir.path().join("assets/logo.txt");
         let asset = std::fs::read_to_string(asset_path).expect("read asset");
         assert_eq!(asset, "logo");
+    }
+
+    #[test]
+    fn excludes_matching_paths() {
+        let input_dir = tempdir().expect("input tempdir");
+        let output_dir = tempdir().expect("output tempdir");
+
+        std::fs::write(input_dir.path().join("AGENTS.md"), "# Agents").expect("agents");
+        let docs_dir = input_dir.path().join("docs");
+        std::fs::create_dir_all(&docs_dir).expect("docs dir");
+        std::fs::write(docs_dir.join("index.md"), "# Docs").expect("docs");
+
+        let private_dir = input_dir.path().join("private");
+        std::fs::create_dir_all(&private_dir).expect("private dir");
+        std::fs::write(private_dir.join("secret.md"), "# Secret").expect("secret");
+        std::fs::write(private_dir.join("asset.txt"), "nope").expect("asset");
+
+        let mut builder = globset::GlobSetBuilder::new();
+        builder
+            .add(globset::Glob::new("**/AGENTS.md").expect("glob"))
+            .add(globset::Glob::new("private/**").expect("glob"));
+        let excludes = builder.build().expect("globset");
+
+        let template = Template::built_in();
+        build_site(
+            input_dir.path(),
+            output_dir.path(),
+            &RenderOptions {
+                live_reload: false,
+                template: &template,
+                exclude: Some(&excludes),
+            },
+        )
+        .expect("build site");
+
+        assert!(!output_dir.path().join("AGENTS.html").exists());
+        assert!(!output_dir.path().join("private/secret.html").exists());
+        assert!(!output_dir.path().join("private/asset.txt").exists());
+        assert!(output_dir.path().join("docs/index.html").exists());
     }
 
     #[test]
@@ -551,7 +626,7 @@ mod tests {
         std::fs::create_dir_all(&sub_dir).expect("sub dir");
         std::fs::write(sub_dir.join("README.md"), "# Subsection").expect("sub readme");
 
-        let site_map = build_site_map(input_dir.path());
+        let site_map = build_site_map(input_dir.path(), None);
         let current = site_map
             .pages_by_path
             .get(&PathBuf::from("docs/guide/extra.md"))
@@ -586,7 +661,7 @@ mod tests {
         let sub_dir = guide_dir.join("sub");
         std::fs::create_dir_all(&sub_dir).expect("sub dir");
         std::fs::write(sub_dir.join("README.md"), "# Subsection").expect("sub readme");
-        let site_map = build_site_map(input_dir.path());
+        let site_map = build_site_map(input_dir.path(), None);
         let current = site_map
             .pages_by_path
             .get(&PathBuf::from("docs/guide/page.md"))
@@ -615,7 +690,7 @@ mod tests {
         std::fs::create_dir_all(&zeta_dir).expect("zeta dir");
         std::fs::write(zeta_dir.join("README.md"), "# Zeta Folder").expect("zeta readme");
 
-        let site_map = build_site_map(input_dir.path());
+        let site_map = build_site_map(input_dir.path(), None);
         let current = site_map
             .pages_by_path
             .get(&PathBuf::from("docs/README.md"))

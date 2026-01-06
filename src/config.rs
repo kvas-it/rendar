@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     pub input: Option<PathBuf>,
     pub template: Option<PathBuf>,
+    pub exclude: Option<Vec<String>>,
     pub preview: Option<PreviewConfig>,
 }
 
@@ -72,6 +73,7 @@ mod tests {
         let content = r#"
 input = "docs"
 template = "theme.html"
+exclude = ["AGENTS.md", "CLAUDE.md"]
 
 [preview]
 port = 4040
@@ -82,6 +84,10 @@ open = true
         let config = config.expect("config should exist");
         assert_eq!(config.input.unwrap(), dir.path().join("docs"));
         assert_eq!(config.template.unwrap(), dir.path().join("theme.html"));
+        assert_eq!(
+            config.exclude.unwrap(),
+            vec!["AGENTS.md".to_string(), "CLAUDE.md".to_string()]
+        );
         let preview = config.preview.expect("preview config");
         assert_eq!(preview.port, Some(4040));
         assert_eq!(preview.open, Some(true));

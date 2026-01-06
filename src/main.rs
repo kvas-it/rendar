@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use axum::extract::State;
 use clap::{Parser, Subcommand};
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -34,6 +35,9 @@ enum Command {
         /// Optional template file path.
         #[arg(long)]
         template: Option<PathBuf>,
+        /// Glob patterns to exclude from rendering (relative to input).
+        #[arg(long, value_name = "PATTERN", action = clap::ArgAction::Append)]
+        exclude: Vec<String>,
     },
     /// Check for broken links and other warnings without writing output.
     Check {
@@ -43,6 +47,9 @@ enum Command {
         /// Optional config file path (e.g., rendar.toml).
         #[arg(short, long)]
         config: Option<PathBuf>,
+        /// Glob patterns to exclude from rendering (relative to input).
+        #[arg(long, value_name = "PATTERN", action = clap::ArgAction::Append)]
+        exclude: Vec<String>,
     },
     /// Start a local preview server with live reload.
     Preview {
@@ -64,6 +71,9 @@ enum Command {
         /// Port for the preview server.
         #[arg(long)]
         port: Option<u16>,
+        /// Glob patterns to exclude from rendering (relative to input).
+        #[arg(long, value_name = "PATTERN", action = clap::ArgAction::Append)]
+        exclude: Vec<String>,
     },
 }
 
@@ -75,8 +85,13 @@ fn main() -> Result<()> {
             input,
             config,
             template,
-        } => run_build(out, input, config, template),
-        Command::Check { input, config } => run_check(input, config),
+            exclude,
+        } => run_build(out, input, config, template, exclude),
+        Command::Check {
+            input,
+            config,
+            exclude,
+        } => run_check(input, config, exclude),
         Command::Preview {
             input,
             config,
@@ -84,7 +99,8 @@ fn main() -> Result<()> {
             start_on,
             open,
             port,
-        } => run_preview(input, config, template, start_on, open, port),
+            exclude,
+        } => run_preview(input, config, template, start_on, open, port, exclude),
     }
 }
 
@@ -93,27 +109,31 @@ fn run_build(
     input: Option<PathBuf>,
     config: Option<PathBuf>,
     template: Option<PathBuf>,
+    exclude: Vec<String>,
 ) -> Result<()> {
     let config = config::load_config(config.as_deref())?;
     let input = resolve_input(input, config.as_ref());
     let template = resolve_template(template, config.as_ref());
     let template = load_template(template)?;
+    let excludes = resolve_excludes(exclude, config.as_ref())?;
     site::build_site(
         &input,
         &out,
         &site::RenderOptions {
             live_reload: false,
             template: &template,
+            exclude: excludes.as_ref(),
         },
     )?;
     println!("Rendered site to {}", out.display());
     Ok(())
 }
 
-fn run_check(input: Option<PathBuf>, config: Option<PathBuf>) -> Result<()> {
+fn run_check(input: Option<PathBuf>, config: Option<PathBuf>, exclude: Vec<String>) -> Result<()> {
     let config = config::load_config(config.as_deref())?;
     let input = resolve_input(input, config.as_ref());
-    let warnings = site::check_site(&input)?;
+    let excludes = resolve_excludes(exclude, config.as_ref())?;
+    let warnings = site::check_site(&input, excludes.as_ref())?;
     if warnings > 0 {
         std::process::exit(1);
     }
@@ -127,6 +147,7 @@ fn run_preview(
     start_on: Option<PathBuf>,
     open: bool,
     port: Option<u16>,
+    exclude: Vec<String>,
 ) -> Result<()> {
     let config = config::load_config(config.as_deref())?;
     let input_override = input.or_else(|| config.as_ref().and_then(|cfg| cfg.input.clone()));
@@ -135,6 +156,15 @@ fn run_preview(
     let start_page = preview_paths.start_page;
     let template = resolve_template(template, config.as_ref());
     let template = load_template(template)?;
+    let excludes = resolve_excludes(exclude, config.as_ref())?;
+    if let Some(start_page) = start_page.as_ref() {
+        if site::is_excluded_path(start_page, &input, excludes.as_ref()) {
+            return Err(anyhow::anyhow!(
+                "Start page {} is excluded by pattern",
+                start_page.display()
+            ));
+        }
+    }
     let temp_dir = tempfile::tempdir().context("Failed to create preview directory")?;
     let output = temp_dir.path().to_path_buf();
     site::build_site(
@@ -143,6 +173,7 @@ fn run_preview(
         &site::RenderOptions {
             live_reload: true,
             template: &template,
+            exclude: excludes.as_ref(),
         },
     )?;
 
@@ -150,6 +181,7 @@ fn run_preview(
     let watcher_version = Arc::clone(&version);
     let input_clone = input.clone();
     let output_clone = output.clone();
+    let watcher_excludes = excludes.clone();
 
     std::thread::spawn(move || {
         if let Err(err) = watch_and_rebuild(
@@ -157,6 +189,7 @@ fn run_preview(
             &output_clone,
             watcher_version,
             template,
+            watcher_excludes,
         ) {
             eprintln!("Preview watcher error: {err}");
         }
@@ -165,7 +198,7 @@ fn run_preview(
     let port = resolve_preview_port(port, config.as_ref());
     let address = format!("127.0.0.1:{}", port);
     let start_url = if let Some(start_page) = start_page.as_ref() {
-        let index_dirs = site::collect_index_dirs(&input);
+        let index_dirs = site::collect_index_dirs(&input, excludes.as_ref());
         match site::output_rel_path(start_page, &input, &index_dirs) {
             Some(rel) => format!("http://{address}/{}", path_to_url(&rel)),
             None => format!("http://{address}/"),
@@ -190,6 +223,7 @@ fn watch_and_rebuild(
     output: &std::path::Path,
     version: Arc<AtomicU64>,
     template: template::Template,
+    excludes: Option<GlobSet>,
 ) -> Result<()> {
     use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
     use std::sync::mpsc::channel;
@@ -216,6 +250,7 @@ fn watch_and_rebuild(
             &site::RenderOptions {
                 live_reload: true,
                 template: &template,
+                exclude: excludes.as_ref(),
             },
         ) {
             eprintln!("Failed to rebuild preview: {err}");
@@ -263,6 +298,31 @@ fn resolve_preview_open(open: bool, config: Option<&config::Config>) -> bool {
             .and_then(|preview| preview.open)
             .unwrap_or(false)
     }
+}
+
+fn resolve_excludes(
+    cli: Vec<String>,
+    config: Option<&config::Config>,
+) -> Result<Option<GlobSet>> {
+    let patterns = if !cli.is_empty() {
+        cli
+    } else {
+        config
+            .and_then(|cfg| cfg.exclude.clone())
+            .unwrap_or_default()
+    };
+
+    if patterns.is_empty() {
+        return Ok(None);
+    }
+
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        let glob = Glob::new(&pattern)
+            .with_context(|| format!("Invalid exclude pattern: {}", pattern))?;
+        builder.add(glob);
+    }
+    Ok(Some(builder.build()?))
 }
 
 struct PreviewPaths {
@@ -479,6 +539,7 @@ mod tests {
         let config = Config {
             input: Some(PathBuf::from("config-input")),
             template: None,
+            exclude: None,
             preview: None,
         };
         let resolved = resolve_input(Some(PathBuf::from("cli-input")), Some(&config));
@@ -490,6 +551,7 @@ mod tests {
         let config = Config {
             input: None,
             template: Some(PathBuf::from("config-template.html")),
+            exclude: None,
             preview: None,
         };
         let resolved = resolve_template(None, Some(&config));
@@ -501,6 +563,7 @@ mod tests {
         let config = Config {
             input: None,
             template: None,
+            exclude: None,
             preview: Some(PreviewConfig {
                 port: Some(4000),
                 open: None,
@@ -515,6 +578,7 @@ mod tests {
         let config = Config {
             input: None,
             template: None,
+            exclude: None,
             preview: Some(PreviewConfig {
                 port: None,
                 open: Some(true),
@@ -529,6 +593,7 @@ mod tests {
         let config = Config {
             input: None,
             template: None,
+            exclude: None,
             preview: None,
         };
         let resolved = resolve_preview_port(None, Some(&config));

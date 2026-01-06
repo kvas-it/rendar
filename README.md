@@ -9,15 +9,16 @@ cargo run -- preview --open
 ```
 
 ## Commands
-- `build --out <dir> [--input <dir>] [--template <file>] [--config <file>]`
-- `check [--input <dir>] [--config <file>]`
-- `preview [--input <dir>] [--template <file>] [--config <file>] [--start-on <path>] [--open] [--port <port>]`
+- `build --out <dir> [--input <dir>] [--template <file>] [--config <file>] [--exclude <pattern>]`
+- `check [--input <dir>] [--config <file>] [--exclude <pattern>]`
+- `preview [--input <dir>] [--template <file>] [--config <file>] [--start-on <path>] [--open] [--port <port>] [--exclude <pattern>]`
 
 ## Config (Optional)
 Create `rendar.toml` in the working directory:
 ```toml
 input = "docs"
 template = "theme.html"
+exclude = ["**/AGENTS.md", "**/CLAUDE.md"]
 
 [preview]
 port = 4000
@@ -25,6 +26,8 @@ open = true
 ```
 
 CLI flags override config values when provided.
+
+`exclude` patterns use glob syntax, like `**/AGENTS.md` for any depth or `private/**` to skip a folder. Pass `--exclude` multiple times to add patterns.
 
 ## Templates
 The built-in template ships with a minimal theme, Mermaid.js, and KaTeX. Custom templates can use these placeholders:
