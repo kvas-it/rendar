@@ -40,6 +40,54 @@
           ]
         });
       }
+
+      function fuzzyMatch(query, text) {
+        var qIndex = 0;
+        if (query.length === 0) {
+          return true;
+        }
+        for (var i = 0; i < text.length; i += 1) {
+          if (text[i] === query[qIndex]) {
+            qIndex += 1;
+            if (qIndex === query.length) {
+              return true;
+            }
+          }
+        }
+        return false;
+      }
+
+      function setupNavFilter() {
+        var list = document.querySelector(".nav-pages");
+        if (!list) {
+          return;
+        }
+        var items = Array.prototype.slice.call(list.querySelectorAll("li"));
+        if (items.length <= 15) {
+          return;
+        }
+        var section = list.closest(".nav-section");
+        if (!section) {
+          return;
+        }
+        var input = document.createElement("input");
+        input.type = "search";
+        input.className = "nav-filter";
+        input.placeholder = "Filter pages";
+        input.setAttribute("aria-label", "Filter pages");
+        section.insertBefore(input, list);
+
+        input.addEventListener("input", function () {
+          var query = input.value.toLowerCase().replace(/\s+/g, "");
+          items.forEach(function (item) {
+            var text = item.textContent.toLowerCase();
+            var matches = query.length === 0 || fuzzyMatch(query, text);
+            item.style.display = matches ? "" : "none";
+          });
+        });
+      }
+
+      setupNavFilter();
     });
   </script>
   {{extra_body}}

@@ -47,6 +47,23 @@ body {
   margin-bottom: 6px;
 }
 
+.nav-filter {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  font-size: 0.9rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--fg);
+}
+
+.nav-filter:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .nav-list {
   list-style: none;
   padding: 0;

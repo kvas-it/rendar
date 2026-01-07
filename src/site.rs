@@ -339,7 +339,7 @@ fn build_nav_html(current: &PageEntry, site_map: &SiteMap) -> String {
     if !page_items.is_empty() {
         nav.push_str(r#"<div class="nav-section">"#);
         nav.push_str(r#"<div class="nav-title">Pages</div>"#);
-        nav.push_str(r#"<ul class="nav-list">"#);
+        nav.push_str(r#"<ul class="nav-list nav-pages">"#);
         for item in page_items {
             nav.push_str(&item);
         }
@@ -349,7 +349,7 @@ fn build_nav_html(current: &PageEntry, site_map: &SiteMap) -> String {
     if !folder_items.is_empty() {
         nav.push_str(r#"<div class="nav-section">"#);
         nav.push_str(r#"<div class="nav-title">Folders</div>"#);
-        nav.push_str(r#"<ul class="nav-list">"#);
+        nav.push_str(r#"<ul class="nav-list nav-folders">"#);
         for item in folder_items {
             nav.push_str(&item);
         }
