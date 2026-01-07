@@ -25,10 +25,10 @@ body {
 }
 
 .sidebar {
-  width: 260px;
+  width: clamp(240px, 24vw, 360px);
   background: var(--sidebar-bg);
   border-right: 1px solid var(--sidebar-border);
-  padding: 32px 24px;
+  padding: 20px 16px;
   position: sticky;
   top: 0;
   height: 100vh;
@@ -36,15 +36,15 @@ body {
 }
 
 .nav-section {
-  margin-bottom: 28px;
+  margin-bottom: 18px;
 }
 
 .nav-title {
-  font-size: 0.75rem;
+  font-size: 0.68rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted);
-  margin-bottom: 10px;
+  margin-bottom: 6px;
 }
 
 .nav-list {
@@ -54,12 +54,13 @@ body {
 }
 
 .nav-list li {
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
 
 .nav-list a {
   color: var(--fg);
   text-decoration: none;
+  font-size: 0.9rem;
 }
 
 .nav-list a:hover {
@@ -113,6 +114,7 @@ body {
     position: static;
     border-right: none;
     border-bottom: 1px solid var(--sidebar-border);
+    padding: 16px 14px;
   }
 
   .main {
