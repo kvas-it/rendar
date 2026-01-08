@@ -9,6 +9,7 @@ use walkdir::WalkDir;
 
 pub struct RenderOptions<'a> {
     pub live_reload: bool,
+    pub heartbeat: bool,
     pub template: &'a Template,
     pub exclude: Option<&'a GlobSet>,
 }
@@ -34,6 +35,9 @@ pub fn build_site(input: &Path, output: &Path, options: &RenderOptions<'_>) -> R
         .with_context(|| format!("Failed to create output directory {}", output.display()))?;
 
     let site_map = build_site_map(input, options.exclude);
+
+    let extra_body = preview_extra_body(options.live_reload, options.heartbeat);
+    let extra_body = extra_body.as_deref();
 
     for entry in walk_entries(input, options.exclude) {
         let path = entry.path();
@@ -69,11 +73,6 @@ pub fn build_site(input: &Path, output: &Path, options: &RenderOptions<'_>) -> R
             let page_entry = match site_map.pages_by_path.get(&rel_path) {
                 Some(entry) => entry,
                 None => continue,
-            };
-            let extra_body = if options.live_reload {
-                Some(live_reload_script())
-            } else {
-                None
             };
             let nav_html = build_nav_html(page_entry, &site_map);
             let breadcrumbs_html = build_breadcrumbs_html(page_entry, &site_map);
@@ -526,6 +525,40 @@ fn live_reload_script() -> &'static str {
 "#
 }
 
+fn preview_extra_body(live_reload: bool, heartbeat: bool) -> Option<String> {
+    let mut body = String::new();
+    if live_reload {
+        body.push_str(live_reload_script());
+    }
+    if heartbeat {
+        body.push_str(heartbeat_script());
+    }
+    if body.is_empty() {
+        None
+    } else {
+        Some(body)
+    }
+}
+
+fn heartbeat_script() -> &'static str {
+    r#"<script>
+(function () {
+  const endpoint = "/__rendar_heartbeat";
+  function ping() {
+    fetch(endpoint, { method: "POST", cache: "no-store" }).catch(() => {});
+  }
+  ping();
+  setInterval(ping, 5000);
+  window.addEventListener("beforeunload", () => {
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon(endpoint, "bye");
+    }
+  });
+})();
+</script>
+"#
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,6 +583,7 @@ mod tests {
             output_dir.path(),
             &RenderOptions {
                 live_reload: false,
+                heartbeat: false,
                 template: &template,
                 exclude: None,
             },
@@ -595,6 +629,7 @@ mod tests {
             output_dir.path(),
             &RenderOptions {
                 live_reload: false,
+                heartbeat: false,
                 template: &template,
                 exclude: Some(&excludes),
             },

@@ -11,7 +11,7 @@ cargo run -- preview --open
 ## Commands
 - `build --out <dir> [--input <dir>] [--template <file>] [--config <file>] [--exclude <pattern>]`
 - `check [--input <dir>] [--config <file>] [--exclude <pattern>]`
-- `preview [--input <dir>] [--template <file>] [--config <file>] [--start-on <path>] [--open] [--port <port>] [--exclude <pattern>]`
+- `preview [--input <dir>] [--template <file>] [--config <file>] [--start-on <path>] [--open] [--no-open] [--daemon] [--auto-exit[=SECONDS]] [--port <port>] [--exclude <pattern>]`
 
 ## Config (Optional)
 Create `rendar.toml` in the working directory:
@@ -62,3 +62,7 @@ The built-in template ships with a minimal theme, Mermaid.js, and KaTeX. Custom 
 - Use `--start-on` to open a specific Markdown file or directory when previewing.
 - If `--input` is omitted and the start page is outside the current directory, rendar auto-detects the root by walking upward through folders with an index/README.
 - When using the default port 3000, rendar will pick a random available port if 3000 is already in use.
+
+## Preview Automation
+- `--daemon` starts the preview server in the background, prints `URL=...` and `PID=...`, and implies `--open` unless `--no-open` is provided.
+- `--auto-exit[=SECONDS]` shuts down the preview server after a period of inactivity (default 30s). Preview pages send a heartbeat ping every 5 seconds while open.

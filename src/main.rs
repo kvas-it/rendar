@@ -68,6 +68,18 @@ enum Command {
         /// Open the browser after starting the server.
         #[arg(long)]
         open: bool,
+        /// Do not open the browser after starting the server.
+        #[arg(long, conflicts_with = "open")]
+        no_open: bool,
+        /// Run the preview server in the background and print PID/URL.
+        #[arg(long)]
+        daemon: bool,
+        /// Internal flag used for daemon child processes.
+        #[arg(long, hide = true)]
+        daemon_child: bool,
+        /// Exit after no active preview pages for N seconds (default 30).
+        #[arg(long, value_name = "SECONDS", num_args = 0..=1, default_missing_value = "30")]
+        auto_exit: Option<u64>,
         /// Port for the preview server.
         #[arg(long)]
         port: Option<u16>,
@@ -98,9 +110,25 @@ fn main() -> Result<()> {
             template,
             start_on,
             open,
+            no_open,
+            daemon,
+            daemon_child,
+            auto_exit,
             port,
             exclude,
-        } => run_preview(input, config, template, start_on, open, port, exclude),
+        } => run_preview(
+            input,
+            config,
+            template,
+            start_on,
+            open,
+            no_open,
+            daemon,
+            daemon_child,
+            auto_exit,
+            port,
+            exclude,
+        ),
     }
 }
 
@@ -121,6 +149,7 @@ fn run_build(
         &out,
         &site::RenderOptions {
             live_reload: false,
+            heartbeat: false,
             template: &template,
             exclude: excludes.as_ref(),
         },
@@ -146,9 +175,21 @@ fn run_preview(
     template: Option<PathBuf>,
     start_on: Option<PathBuf>,
     open: bool,
+    no_open: bool,
+    daemon: bool,
+    daemon_child: bool,
+    auto_exit: Option<u64>,
     port: Option<u16>,
     exclude: Vec<String>,
 ) -> Result<()> {
+    if daemon && daemon_child {
+        return Err(anyhow::anyhow!(
+            "Cannot use --daemon and --daemon-child together"
+        ));
+    }
+    if daemon {
+        return spawn_preview_daemon();
+    }
     let config = config::load_config(config.as_deref())?;
     let input_override = input.or_else(|| config.as_ref().and_then(|cfg| cfg.input.clone()));
     let preview_paths = resolve_preview_paths(input_override, start_on)?;
@@ -167,11 +208,14 @@ fn run_preview(
     }
     let temp_dir = tempfile::tempdir().context("Failed to create preview directory")?;
     let output = temp_dir.path().to_path_buf();
+    let auto_exit_duration = auto_exit.map(Duration::from_secs);
+    let auto_exit_enabled = auto_exit_duration.is_some();
     site::build_site(
         &input,
         &output,
         &site::RenderOptions {
             live_reload: true,
+            heartbeat: auto_exit_enabled,
             template: &template,
             exclude: excludes.as_ref(),
         },
@@ -182,6 +226,7 @@ fn run_preview(
     let input_clone = input.clone();
     let output_clone = output.clone();
     let watcher_excludes = excludes.clone();
+    let watcher_heartbeat = auto_exit_enabled;
 
     std::thread::spawn(move || {
         if let Err(err) = watch_and_rebuild(
@@ -190,6 +235,7 @@ fn run_preview(
             watcher_version,
             template,
             watcher_excludes,
+            watcher_heartbeat,
         ) {
             eprintln!("Preview watcher error: {err}");
         }
@@ -207,8 +253,13 @@ fn run_preview(
     } else {
         format!("http://{address}/")
     };
-    println!("Preview server running at {start_url}");
-    let open = resolve_preview_open(open, config.as_ref());
+    if daemon_child {
+        println!("URL={start_url}");
+        println!("PID={}", std::process::id());
+    } else {
+        println!("Preview server running at {start_url}");
+    }
+    let open = resolve_preview_open(open, no_open, daemon_child, config.as_ref());
     if open {
         open_browser(&start_url);
     }
@@ -217,7 +268,7 @@ fn run_preview(
     rt.block_on(async move {
         let listener = tokio::net::TcpListener::from_std(listener)
             .context("Failed to use preview listener")?;
-        serve_preview(output, version, listener).await
+        serve_preview(output, version, listener, auto_exit_duration).await
     })
 }
 
@@ -227,6 +278,7 @@ fn watch_and_rebuild(
     version: Arc<AtomicU64>,
     template: template::Template,
     excludes: Option<GlobSet>,
+    heartbeat: bool,
 ) -> Result<()> {
     use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
     use std::sync::mpsc::channel;
@@ -252,6 +304,7 @@ fn watch_and_rebuild(
             output,
             &site::RenderOptions {
                 live_reload: true,
+                heartbeat,
                 template: &template,
                 exclude: excludes.as_ref(),
             },
@@ -325,8 +378,15 @@ fn bind_preview_listener(preferred_port: u16) -> Result<(std::net::TcpListener, 
     Ok((listener, port))
 }
 
-fn resolve_preview_open(open: bool, config: Option<&config::Config>) -> bool {
-    if open {
+fn resolve_preview_open(
+    open: bool,
+    no_open: bool,
+    daemon: bool,
+    config: Option<&config::Config>,
+) -> bool {
+    if no_open {
+        false
+    } else if open || daemon {
         true
     } else {
         config
@@ -522,26 +582,86 @@ async fn serve_preview(
     output: PathBuf,
     version: Arc<AtomicU64>,
     listener: tokio::net::TcpListener,
+    auto_exit: Option<Duration>,
 ) -> Result<()> {
-    use axum::{routing::get, Router};
+    use axum::{routing::get, routing::post, Router};
     use tower_http::services::ServeDir;
 
-    let state = Arc::new(PreviewState { version });
+    let auto_exit_state = auto_exit.as_ref().map(|_| AutoExitState {
+        last_seen: Arc::new(AtomicU64::new(now_millis())),
+    });
+    let state = Arc::new(PreviewState {
+        version,
+        auto_exit: auto_exit_state.clone(),
+    });
     let app = Router::new()
         .route("/__rendar_version", get(version_handler))
+        .route(
+            "/__rendar_heartbeat",
+            post(heartbeat_handler).get(heartbeat_handler),
+        )
         .nest_service("/", ServeDir::new(output).append_index_html_on_directories(true))
         .with_state(state);
 
-    axum::serve(listener, app).await.context("Preview server failed")
+    if let Some(timeout) = auto_exit {
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+        if let Some(state) = auto_exit_state {
+            let last_seen = Arc::clone(&state.last_seen);
+            let shutdown_signal = Arc::clone(&shutdown);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(1));
+                loop {
+                    interval.tick().await;
+                    let elapsed = now_millis().saturating_sub(last_seen.load(Ordering::SeqCst));
+                    if elapsed >= timeout.as_millis() as u64 {
+                        shutdown_signal.notify_one();
+                        break;
+                    }
+                }
+            });
+        }
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                shutdown.notified().await;
+            })
+            .await
+            .context("Preview server failed")
+    } else {
+        axum::serve(listener, app).await.context("Preview server failed")
+    }
 }
 
 #[derive(Clone)]
 struct PreviewState {
     version: Arc<AtomicU64>,
+    auto_exit: Option<AutoExitState>,
+}
+
+#[derive(Clone)]
+struct AutoExitState {
+    last_seen: Arc<AtomicU64>,
 }
 
 async fn version_handler(State(state): State<Arc<PreviewState>>) -> String {
     state.version.load(Ordering::SeqCst).to_string()
+}
+
+async fn heartbeat_handler(State(state): State<Arc<PreviewState>>) -> axum::http::StatusCode {
+    if let Some(auto_exit) = state.auto_exit.as_ref() {
+        auto_exit
+            .last_seen
+            .store(now_millis(), Ordering::SeqCst);
+    }
+    axum::http::StatusCode::NO_CONTENT
+}
+
+fn now_millis() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 fn open_browser(url: &str) {
@@ -560,6 +680,82 @@ fn open_browser(url: &str) {
 
     command.arg(url);
     let _ = command.spawn();
+}
+
+fn spawn_preview_daemon() -> Result<()> {
+    use std::ffi::OsString;
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let exe = std::env::current_exe().context("Failed to read current executable path")?;
+    let mut args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let mut replaced = false;
+    let mut filtered = Vec::with_capacity(args.len() + 1);
+    for arg in args.drain(..) {
+        if arg == "--daemon" {
+            if !replaced {
+                filtered.push(OsString::from("--daemon-child"));
+                replaced = true;
+            }
+        } else {
+            filtered.push(arg);
+        }
+    }
+    if !replaced {
+        filtered.push(OsString::from("--daemon-child"));
+    }
+
+    let mut child = std::process::Command::new(exe)
+        .args(filtered)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("Failed to spawn preview daemon")?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .context("Failed to capture preview daemon output")?;
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines().flatten() {
+            if line.starts_with("URL=") || line.starts_with("PID=") {
+                let _ = tx.send(line);
+            }
+        }
+    });
+
+    let mut url = None;
+    let mut pid = None;
+    let deadline = Duration::from_secs(5);
+    let start = std::time::Instant::now();
+    while url.is_none() || pid.is_none() {
+        let timeout = deadline.saturating_sub(start.elapsed());
+        if timeout.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(timeout) {
+            Ok(line) => {
+                if line.starts_with("URL=") {
+                    url = Some(line);
+                } else if line.starts_with("PID=") {
+                    pid = Some(line);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    if let Some(line) = url {
+        println!("{line}");
+    }
+    if let Some(line) = pid {
+        println!("{line}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -617,7 +813,7 @@ mod tests {
                 open: Some(true),
             }),
         };
-        let resolved = resolve_preview_open(false, Some(&config));
+        let resolved = resolve_preview_open(false, false, false, Some(&config));
         assert!(resolved);
     }
 
