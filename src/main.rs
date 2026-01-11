@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 mod config;
+mod csv_preview;
 mod render;
 mod site;
 mod template;
@@ -38,6 +39,9 @@ enum Command {
         /// Glob patterns to exclude from rendering (relative to input).
         #[arg(long, value_name = "PATTERN", action = clap::ArgAction::Append)]
         exclude: Vec<String>,
+        /// Maximum CSV rows to render (0 = unlimited).
+        #[arg(long, value_name = "ROWS", default_value_t = 1000)]
+        csv_max_rows: usize,
     },
     /// Check for broken links and other warnings without writing output.
     Check {
@@ -86,6 +90,9 @@ enum Command {
         /// Glob patterns to exclude from rendering (relative to input).
         #[arg(long, value_name = "PATTERN", action = clap::ArgAction::Append)]
         exclude: Vec<String>,
+        /// Maximum CSV rows to render (0 = unlimited).
+        #[arg(long, value_name = "ROWS", default_value_t = 1000)]
+        csv_max_rows: usize,
     },
 }
 
@@ -98,7 +105,8 @@ fn main() -> Result<()> {
             config,
             template,
             exclude,
-        } => run_build(out, input, config, template, exclude),
+            csv_max_rows,
+        } => run_build(out, input, config, template, exclude, csv_max_rows),
         Command::Check {
             input,
             config,
@@ -116,6 +124,7 @@ fn main() -> Result<()> {
             auto_exit,
             port,
             exclude,
+            csv_max_rows,
         } => run_preview(
             input,
             config,
@@ -128,6 +137,7 @@ fn main() -> Result<()> {
             auto_exit,
             port,
             exclude,
+            csv_max_rows,
         ),
     }
 }
@@ -138,6 +148,7 @@ fn run_build(
     config: Option<PathBuf>,
     template: Option<PathBuf>,
     exclude: Vec<String>,
+    csv_max_rows: usize,
 ) -> Result<()> {
     let config = config::load_config(config.as_deref())?;
     let input = resolve_input(input, config.as_ref());
@@ -152,6 +163,7 @@ fn run_build(
             heartbeat: false,
             template: &template,
             exclude: excludes.as_ref(),
+            csv_max_rows: normalize_csv_max_rows(csv_max_rows),
         },
     )?;
     println!("Rendered site to {}", out.display());
@@ -181,6 +193,7 @@ fn run_preview(
     auto_exit: Option<u64>,
     port: Option<u16>,
     exclude: Vec<String>,
+    csv_max_rows: usize,
 ) -> Result<()> {
     if daemon && daemon_child {
         return Err(anyhow::anyhow!(
@@ -218,6 +231,7 @@ fn run_preview(
             heartbeat: auto_exit_enabled,
             template: &template,
             exclude: excludes.as_ref(),
+            csv_max_rows: normalize_csv_max_rows(csv_max_rows),
         },
     )?;
 
@@ -236,6 +250,7 @@ fn run_preview(
             template,
             watcher_excludes,
             watcher_heartbeat,
+            normalize_csv_max_rows(csv_max_rows),
         ) {
             eprintln!("Preview watcher error: {err}");
         }
@@ -279,6 +294,7 @@ fn watch_and_rebuild(
     template: template::Template,
     excludes: Option<GlobSet>,
     heartbeat: bool,
+    csv_max_rows: Option<usize>,
 ) -> Result<()> {
     use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
     use std::sync::mpsc::channel;
@@ -307,6 +323,7 @@ fn watch_and_rebuild(
                 heartbeat,
                 template: &template,
                 exclude: excludes.as_ref(),
+                csv_max_rows,
             },
         ) {
             eprintln!("Failed to rebuild preview: {err}");
@@ -490,7 +507,7 @@ fn resolve_start_page(start_on: &Path) -> Result<PathBuf> {
         }
         if !is_markdown_file(start_on) {
             return Err(anyhow::anyhow!(
-                "Start page {} is not a Markdown file",
+                "Start page {} is not a Markdown or CSV file",
                 start_on.display()
             ));
         }
@@ -557,8 +574,16 @@ fn is_markdown_file(path: &Path) -> bool {
             .and_then(|ext| ext.to_str())
             .map(|ext| ext.to_ascii_lowercase())
             .as_deref(),
-        Some("md") | Some("markdown")
+        Some("md") | Some("markdown") | Some("csv")
     )
+}
+
+fn normalize_csv_max_rows(value: usize) -> Option<usize> {
+    if value == 0 {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 fn is_within(path: &Path, root: &Path) -> bool {

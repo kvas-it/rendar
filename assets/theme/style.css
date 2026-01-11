@@ -203,6 +203,76 @@ th, td {
   text-align: left;
 }
 
+.csv-preview {
+  max-width: 100%;
+}
+
+.csv-table-wrap {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: auto;
+  max-height: 70vh;
+  background: var(--card);
+}
+
+.csv-table {
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+  font-size: 0.88rem;
+}
+
+.csv-table th,
+.csv-table td {
+  padding: 6px 10px;
+  border-color: var(--border);
+  white-space: nowrap;
+}
+
+.csv-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--card);
+  z-index: 1;
+  font-weight: 700;
+}
+
+.csv-table tbody tr:nth-child(even) {
+  background: #fafafa;
+}
+
+.csv-table tbody tr:hover {
+  background: #f1f7f7;
+}
+
+.csv-table th[data-sort="asc"]::after,
+.csv-table th[data-sort="desc"]::after {
+  margin-left: 6px;
+  font-size: 0.75rem;
+}
+
+.csv-table th[data-sort="asc"]::after {
+  content: "▲";
+}
+
+.csv-table th[data-sort="desc"]::after {
+  content: "▼";
+}
+
+.csv-notice {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.csv-empty {
+  font-size: 0.95rem;
+  color: var(--muted);
+  padding: 16px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+
 hr {
   border: none;
   border-top: 1px solid var(--border);

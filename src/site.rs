@@ -1,3 +1,4 @@
+use crate::csv_preview::render_csv_file;
 use crate::render::{first_heading_title, render_markdown_file};
 use crate::template::Template;
 use anyhow::{Context, Result};
@@ -12,6 +13,7 @@ pub struct RenderOptions<'a> {
     pub heartbeat: bool,
     pub template: &'a Template,
     pub exclude: Option<&'a GlobSet>,
+    pub csv_max_rows: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -99,6 +101,25 @@ pub fn build_site(input: &Path, output: &Path, options: &RenderOptions<'_>) -> R
             for warning in rendered.warnings {
                 eprintln!("Warning: {warning}");
             }
+        } else if is_csv(path) {
+            let rendered = render_csv_file(path, options.csv_max_rows)?;
+            let rel_path = rel_path.to_path_buf();
+            let page_entry = match site_map.pages_by_path.get(&rel_path) {
+                Some(entry) => entry,
+                None => continue,
+            };
+            let nav_html = build_nav_html(page_entry, &site_map);
+            let breadcrumbs_html = build_breadcrumbs_html(page_entry, &site_map);
+            let full_html = options.template.render(
+                &page_entry.title,
+                &rendered,
+                &nav_html,
+                &breadcrumbs_html,
+                None,
+                extra_body,
+            );
+            let out_path = output.join(&page_entry.output_rel);
+            write_html(&out_path, &full_html)?;
         } else {
             let out_path = output.join(rel_path);
             if let Some(parent) = out_path.parent() {
@@ -154,6 +175,16 @@ fn is_markdown(path: &Path) -> bool {
     )
 }
 
+fn is_csv(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(OsStr::to_str)
+            .map(|ext| ext.to_ascii_lowercase())
+            .as_deref(),
+        Some("csv")
+    )
+}
+
 pub fn is_excluded_path(path: &Path, input: &Path, excludes: Option<&GlobSet>) -> bool {
     let Some(excludes) = excludes else {
         return false;
@@ -192,14 +223,18 @@ pub fn output_rel_path(
     input_root: &Path,
     index_dirs: &HashSet<PathBuf>,
 ) -> Option<PathBuf> {
-    if !is_markdown(path) {
-        return None;
-    }
-    let rel = path.strip_prefix(input_root).ok()?;
-    if is_readme(path) && should_write_index(path, input_root, index_dirs) {
-        Some(rel.parent().unwrap_or(Path::new("")).join("index.html"))
-    } else {
+    if is_markdown(path) {
+        let rel = path.strip_prefix(input_root).ok()?;
+        if is_readme(path) && should_write_index(path, input_root, index_dirs) {
+            Some(rel.parent().unwrap_or(Path::new("")).join("index.html"))
+        } else {
+            Some(rel.with_extension("html"))
+        }
+    } else if is_csv(path) {
+        let rel = path.strip_prefix(input_root).ok()?;
         Some(rel.with_extension("html"))
+    } else {
+        None
     }
 }
 
@@ -219,7 +254,7 @@ fn build_site_map(input: &Path, excludes: Option<&GlobSet>) -> SiteMap {
     let mut landing_dirs = HashSet::new();
 
     for entry in walk_entries(input, excludes) {
-        if entry.file_type().is_file() && is_markdown(entry.path()) {
+        if entry.file_type().is_file() && (is_markdown(entry.path()) || is_csv(entry.path())) {
             let path = entry.path();
             let rel_path = match path.strip_prefix(input) {
                 Ok(rel) => rel.to_path_buf(),
@@ -228,7 +263,7 @@ fn build_site_map(input: &Path, excludes: Option<&GlobSet>) -> SiteMap {
             let rel_dir = rel_path.parent().unwrap_or(Path::new("")).to_path_buf();
             let is_index = is_index(path);
             let is_readme = is_readme(path);
-            let title = title_from_markdown(path);
+            let title = title_from_path(path);
             let output_rel = rel_path.with_extension("html");
             let page = PageEntry {
                 rel_path: rel_path.clone(),
@@ -454,6 +489,14 @@ fn title_from_markdown(path: &Path) -> String {
     display_title(path)
 }
 
+fn title_from_path(path: &Path) -> String {
+    if is_markdown(path) {
+        title_from_markdown(path)
+    } else {
+        display_title(path)
+    }
+}
+
 fn display_title(path: &Path) -> String {
     let stem = path
         .file_stem()
@@ -586,6 +629,7 @@ mod tests {
                 heartbeat: false,
                 template: &template,
                 exclude: None,
+                csv_max_rows: None,
             },
         )
         .expect("build site");
@@ -632,6 +676,7 @@ mod tests {
                 heartbeat: false,
                 template: &template,
                 exclude: Some(&excludes),
+                csv_max_rows: None,
             },
         )
         .expect("build site");
