@@ -210,7 +210,8 @@ pub fn render_csv_file(path: &Path, max_rows: Option<usize>) -> Result<String> {
         html.push_str("<tr>");
         for idx in 0..max_cols {
             let value = row.get(idx).cloned().unwrap_or_default();
-            html.push_str(&format!(r#"<td>{}</td>"#, html_escape(&value)));
+            let cell = render_cell(&value);
+            html.push_str(&format!(r#"<td>{}</td>"#, cell));
         }
         html.push_str("</tr>");
     }
@@ -302,6 +303,21 @@ fn is_numeric(value: &str) -> bool {
         return false;
     }
     trimmed.parse::<f64>().is_ok()
+}
+
+fn render_cell(value: &str) -> String {
+    let trimmed = value.trim();
+    if is_url(trimmed) {
+        let escaped = html_escape(trimmed);
+        format!(r#"<a href="{}" target="_blank" rel="noopener noreferrer">{}</a>"#, escaped, escaped)
+    } else {
+        html_escape(value)
+    }
+}
+
+fn is_url(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
 }
 
 fn html_escape(input: &str) -> String {
