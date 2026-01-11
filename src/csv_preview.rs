@@ -83,6 +83,46 @@ const SORT_SCRIPT: &str = r#"<script>
 </script>
 "#;
 
+const CSV_PAGE_HEAD: &str = r#"<style>
+.layout {
+  align-items: stretch;
+}
+
+.sidebar {
+  flex: 0 0 auto;
+}
+
+.main {
+  min-width: 0;
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.content {
+  max-width: none;
+  flex: 1;
+  padding: 0 16px 24px;
+}
+
+.csv-preview {
+  height: 100%;
+}
+
+.csv-table-wrap {
+  max-height: none;
+  height: 100%;
+}
+</style>
+"#;
+
+pub fn csv_extra_head() -> &'static str {
+    CSV_PAGE_HEAD
+}
+
 pub fn render_csv_file(path: &Path, max_rows: Option<usize>) -> Result<String> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read CSV file {}", path.display()))?;

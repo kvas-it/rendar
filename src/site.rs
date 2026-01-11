@@ -1,4 +1,4 @@
-use crate::csv_preview::render_csv_file;
+use crate::csv_preview::{csv_extra_head, render_csv_file};
 use crate::render::{first_heading_title, render_markdown_file};
 use crate::template::Template;
 use anyhow::{Context, Result};
@@ -115,7 +115,7 @@ pub fn build_site(input: &Path, output: &Path, options: &RenderOptions<'_>) -> R
                 &rendered,
                 &nav_html,
                 &breadcrumbs_html,
-                None,
+                Some(csv_extra_head()),
                 extra_body,
             );
             let out_path = output.join(&page_entry.output_rel);
