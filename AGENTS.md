@@ -32,6 +32,7 @@
 - Rendering mode converts a Markdown tree into HTML with a built-in theme and optional template override.
 - Preview mode runs a local web server with file watching and live reload.
 - Diagrams are rendered client-side with Mermaid.js; math uses KaTeX.
+- Slides mode is enabled via `mode: slides` front matter; each H1 starts a slide with keyboard navigation.
 
 ## Security & Configuration Tips
 - Optional config lives in `rendar.toml` (default is zero-config from current directory).

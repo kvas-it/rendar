@@ -58,6 +58,12 @@ The built-in template ships with a minimal theme, Mermaid.js, and KaTeX. Custom 
 - Breadcrumbs are shown at the top and skip folders without an index/README.
 - Page titles are taken from the first Markdown heading when present.
 
+## Slides Mode
+- Add front matter `mode: slides` to render a deck instead of a document.
+- Each H1 (`#`) starts a new slide.
+- Use left/right arrows or space to navigate; progress shows as `3 / 12`.
+- Breadcrumbs remain available but fade until hovered.
+
 ## Preview Start Page
 - Use `--start-on` to open a specific Markdown file or directory when previewing.
 - If `--input` is omitted and the start page is outside the current directory, rendar auto-detects the root by walking upward through folders with an index/README.

@@ -1,5 +1,6 @@
 use crate::csv_preview::{csv_extra_head, render_csv_file};
-use crate::render::{first_heading_title, render_markdown_file};
+use crate::render::{first_heading_title, render_markdown_file, DocMode};
+use crate::slides::{slides_extra_body, slides_extra_head};
 use crate::template::Template;
 use anyhow::{Context, Result};
 use globset::GlobSet;
@@ -38,8 +39,7 @@ pub fn build_site(input: &Path, output: &Path, options: &RenderOptions<'_>) -> R
 
     let site_map = build_site_map(input, options.exclude);
 
-    let extra_body = preview_extra_body(options.live_reload, options.heartbeat);
-    let extra_body = extra_body.as_deref();
+    let preview_body = preview_extra_body(options.live_reload, options.heartbeat);
 
     for entry in walk_entries(input, options.exclude) {
         let path = entry.path();
@@ -76,8 +76,17 @@ pub fn build_site(input: &Path, output: &Path, options: &RenderOptions<'_>) -> R
                 Some(entry) => entry,
                 None => continue,
             };
-            let nav_html = build_nav_html(page_entry, &site_map);
+            let nav_html = match rendered.mode {
+                DocMode::Slides => String::new(),
+                DocMode::Document => build_nav_html(page_entry, &site_map),
+            };
             let breadcrumbs_html = build_breadcrumbs_html(page_entry, &site_map);
+            let mut extra_head = None;
+            let mut extra_body = preview_body.clone();
+            if rendered.mode == DocMode::Slides {
+                extra_head = Some(slides_extra_head());
+                extra_body = merge_extra_body(extra_body.as_deref(), Some(slides_extra_body()));
+            }
             let full_html = options
                 .template
                 .render(
@@ -85,8 +94,8 @@ pub fn build_site(input: &Path, output: &Path, options: &RenderOptions<'_>) -> R
                     &rendered.html,
                     &nav_html,
                     &breadcrumbs_html,
-                    None,
-                    extra_body,
+                    extra_head.as_deref(),
+                    extra_body.as_deref(),
                 );
             let out_path = output.join(&page_entry.output_rel);
             write_html(&out_path, &full_html)?;
@@ -116,7 +125,7 @@ pub fn build_site(input: &Path, output: &Path, options: &RenderOptions<'_>) -> R
                 &nav_html,
                 &breadcrumbs_html,
                 Some(csv_extra_head()),
-                extra_body,
+                preview_body.as_deref(),
             );
             let out_path = output.join(&page_entry.output_rel);
             write_html(&out_path, &full_html)?;
@@ -580,6 +589,19 @@ fn preview_extra_body(live_reload: bool, heartbeat: bool) -> Option<String> {
         None
     } else {
         Some(body)
+    }
+}
+
+fn merge_extra_body(base: Option<&str>, extra: Option<&str>) -> Option<String> {
+    match (base, extra) {
+        (None, None) => None,
+        (Some(value), None) | (None, Some(value)) => Some(value.to_string()),
+        (Some(base), Some(extra)) => {
+            let mut merged = String::with_capacity(base.len() + extra.len());
+            merged.push_str(base);
+            merged.push_str(extra);
+            Some(merged)
+        }
     }
 }
 

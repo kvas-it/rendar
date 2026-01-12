@@ -1,13 +1,32 @@
 use anyhow::{Context, Result};
-use pulldown_cmark::{html, CowStr, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{html, CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use std::path::{Path, PathBuf};
 
 pub struct RenderedPage {
     pub html: String,
     pub warnings: Vec<String>,
+    pub mode: DocMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DocMode {
+    Document,
+    Slides,
+}
+
+#[derive(Default)]
+struct FrontMatter {
+    mode: Option<String>,
+}
+
+impl FrontMatter {
+    fn is_slides(&self) -> bool {
+        matches!(self.mode.as_deref(), Some("slides"))
+    }
 }
 
 pub fn first_heading_title(markdown: &str) -> Option<String> {
+    let (_front_matter, markdown) = parse_front_matter(markdown);
     let options = markdown_options(true);
     let parser = Parser::new_ext(markdown, options);
 
@@ -44,11 +63,70 @@ pub fn render_markdown_file(
 ) -> Result<RenderedPage> {
     let markdown = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read markdown file {}", path.display()))?;
-    let (html, warnings) = markdown_to_html_with_rewrites(&markdown, path, input_root, index_dirs);
-    Ok(RenderedPage {
-        html: rewrite_mermaid_blocks(&html),
-        warnings,
-    })
+    let (front_matter, content) = parse_front_matter(&markdown);
+    if front_matter.is_slides() {
+            let (html, warnings) =
+                markdown_to_slides_with_rewrites(content, path, input_root, index_dirs);
+        Ok(RenderedPage {
+            html,
+            warnings,
+            mode: DocMode::Slides,
+        })
+    } else {
+        let (html, warnings) = markdown_to_html_with_rewrites(content, path, input_root, index_dirs);
+        Ok(RenderedPage {
+            html: rewrite_mermaid_blocks(&html),
+            warnings,
+            mode: DocMode::Document,
+        })
+    }
+}
+
+fn parse_front_matter(markdown: &str) -> (FrontMatter, &str) {
+    let mut front_matter = FrontMatter::default();
+    let mut lines = markdown.split_inclusive('\n');
+    let Some(first_line) = lines.next() else {
+        return (front_matter, markdown);
+    };
+    let first_trimmed = first_line.trim_end_matches(&['\r', '\n'][..]);
+    if first_trimmed != "---" {
+        return (front_matter, markdown);
+    }
+
+    let mut offset = first_line.len();
+    let mut front_lines: Vec<&str> = Vec::new();
+    let mut end_offset: Option<usize> = None;
+
+    for line in lines {
+        let trimmed = line.trim_end_matches(&['\r', '\n'][..]);
+        if trimmed == "---" {
+            end_offset = Some(offset + line.len());
+            break;
+        }
+        front_lines.push(trimmed);
+        offset += line.len();
+    }
+
+    let Some(end_offset) = end_offset else {
+        return (front_matter, markdown);
+    };
+
+    for line in front_lines {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once(':') {
+            if key.trim() == "mode" {
+                let value = value.trim().trim_matches(&['"', '\''][..]);
+                if !value.is_empty() {
+                    front_matter.mode = Some(value.to_ascii_lowercase());
+                }
+            }
+        }
+    }
+
+    (front_matter, &markdown[end_offset..])
 }
 
 fn rewrite_mermaid_blocks(html: &str) -> String {
@@ -109,6 +187,114 @@ fn markdown_to_html_with_rewrites(
 
     let mut html_output = String::new();
     html::push_html(&mut html_output, parser);
+    (html_output, warnings)
+}
+
+fn markdown_to_slides_with_rewrites(
+    markdown: &str,
+    source_path: &Path,
+    input_root: &Path,
+    index_dirs: &std::collections::HashSet<PathBuf>,
+) -> (String, Vec<String>) {
+    let options = markdown_options(false);
+    let mut warnings = Vec::new();
+    let parser = Parser::new_ext(markdown, options).map(|event| match event {
+        Event::Start(Tag::Link {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => Event::Start(Tag::Link {
+            link_type,
+            dest_url: rewrite_link_dest(
+                dest_url,
+                source_path,
+                input_root,
+                index_dirs,
+                &mut warnings,
+            ),
+            title,
+            id,
+        }),
+        _ => event,
+    });
+
+    let mut slides: Vec<Vec<Event>> = Vec::new();
+    let mut current: Vec<Event> = Vec::new();
+    let mut pending: Vec<Event> = Vec::new();
+    let mut seen_h1 = false;
+
+    for event in parser {
+        match event {
+            Event::Start(Tag::Heading {
+                level: HeadingLevel::H1,
+                ..
+            }) => {
+                if !seen_h1 {
+                    seen_h1 = true;
+                    current.extend(pending.drain(..));
+                } else if !current.is_empty() {
+                    slides.push(current);
+                    current = Vec::new();
+                }
+                current.push(event);
+            }
+            _ => {
+                if seen_h1 {
+                    current.push(event);
+                } else {
+                    pending.push(event);
+                }
+            }
+        }
+    }
+
+    if seen_h1 {
+        if !current.is_empty() {
+            slides.push(current);
+        }
+    } else {
+        slides.push(pending);
+    }
+
+    if slides.is_empty() {
+        slides.push(Vec::new());
+    }
+
+    let slide_count = slides.len();
+    let mut html_output = String::new();
+    html_output.push_str(&format!(
+        r#"<div class="slides-root" data-slide-count="{}" tabindex="0">"#,
+        slide_count
+    ));
+
+    for (idx, events) in slides.into_iter().enumerate() {
+        let mut slide_html = String::new();
+        html::push_html(&mut slide_html, events.into_iter());
+        let slide_html = rewrite_mermaid_blocks(&slide_html);
+        let active_class = if idx == 0 { " is-active" } else { "" };
+        let hidden_attr = if idx == 0 {
+            ""
+        } else {
+            r#" aria-hidden="true""#
+        };
+        html_output.push_str(&format!(
+            r#"<section class="slide{}" id="slide-{}" data-slide="{}"{}>"#,
+            active_class,
+            idx + 1,
+            idx + 1,
+            hidden_attr
+        ));
+        html_output.push_str(&slide_html);
+        html_output.push_str("</section>");
+    }
+
+    html_output.push_str(&format!(
+        r#"<div class="slides-progress">1 / {}</div>"#,
+        slide_count
+    ));
+    html_output.push_str("</div>");
+
     (html_output, warnings)
 }
 
@@ -398,6 +584,26 @@ graph TD;
         let markdown = "# First Title\n\n## Second Title\n";
         let title = first_heading_title(markdown);
         assert_eq!(title.as_deref(), Some("First Title"));
+    }
+
+    #[test]
+    fn ignores_front_matter_in_title() {
+        let markdown = "---\nmode: slides\n---\n# Deck Title\n";
+        let title = first_heading_title(markdown);
+        assert_eq!(title.as_deref(), Some("Deck Title"));
+    }
+
+    #[test]
+    fn splits_slides_on_h1() {
+        let markdown = "# One\n\nIntro\n\n# Two\n\nMore\n";
+        let index_dirs = std::collections::HashSet::new();
+        let (html, _warnings) =
+            markdown_to_slides_with_rewrites(markdown, Path::new("."), Path::new("."), &index_dirs);
+        assert!(html.contains(r#"data-slide-count="2""#));
+        assert!(html.contains(r#"id="slide-1""#));
+        assert!(html.contains(r#"id="slide-2""#));
+        assert!(html.contains("One"));
+        assert!(html.contains("Two"));
     }
 
     #[test]
