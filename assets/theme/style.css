@@ -1,3 +1,5 @@
+@import url("https://fonts.googleapis.com/css2?family=Source+Serif+Pro:wght@400;600;700&display=swap");
+
 :root {
   color-scheme: light;
   --bg: #ffffff;
@@ -257,6 +259,133 @@ th, td {
 
 .csv-table th[data-sort="desc"]::after {
   content: "▼";
+}
+
+@page {
+  margin: 1in 1.2in 1.25in 1.2in;
+}
+
+@page :left {
+  margin-left: 1.45in;
+  margin-right: 1.05in;
+}
+
+@page :right {
+  margin-left: 1.05in;
+  margin-right: 1.45in;
+}
+
+@media print {
+  body {
+    font-family: "Source Serif Pro", "Times New Roman", Times, serif;
+    background: #ffffff;
+    color: #000000;
+  }
+
+  .layout {
+    display: block;
+    min-height: auto;
+  }
+
+  .sidebar,
+  .breadcrumbs {
+    display: none !important;
+  }
+
+  .main {
+    padding: 0;
+  }
+
+  .content {
+    max-width: none;
+    padding: 0 0 0.9in;
+  }
+
+  a {
+    color: inherit;
+    border-bottom: none;
+  }
+
+  pre,
+  code {
+    font-size: 0.9rem;
+  }
+
+  pre {
+    border-color: #cfcfcf;
+  }
+
+  .csv-table-wrap {
+    max-height: none;
+  }
+
+  .print-footer {
+    display: none !important;
+  }
+
+  p,
+  li {
+    orphans: 4;
+    widows: 4;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-weight: 600;
+    break-after: avoid-page;
+    page-break-after: avoid;
+  }
+
+  p,
+  blockquote,
+  pre,
+  table,
+  ul,
+  ol {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  p + ul,
+  p + ol,
+  p + table,
+  p + blockquote,
+  p + pre {
+    break-before: avoid-page;
+    page-break-before: avoid;
+  }
+
+  h1 + p,
+  h2 + p,
+  h3 + p,
+  h4 + p,
+  h5 + p,
+  h6 + p,
+  h1 + ul,
+  h2 + ul,
+  h3 + ul,
+  h4 + ul,
+  h5 + ul,
+  h6 + ul,
+  h1 + ol,
+  h2 + ol,
+  h3 + ol,
+  h4 + ol,
+  h5 + ol,
+  h6 + ol,
+  h1 + table,
+  h2 + table,
+  h3 + table,
+  h4 + table,
+  h5 + table,
+  h6 + table {
+    break-before: avoid-page;
+    page-break-before: avoid;
+  }
 }
 
 .csv-notice {

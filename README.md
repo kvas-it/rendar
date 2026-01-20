@@ -58,6 +58,10 @@ The built-in template ships with a minimal theme, Mermaid.js, and KaTeX. Custom 
 - Breadcrumbs are shown at the top and skip folders without an index/README.
 - Page titles are taken from the first Markdown heading when present.
 
+## Print View
+- Preview pages include a print stylesheet with book-like margins, serif typography, and simplified layout (no sidebar or breadcrumbs).
+- Use your browser's print headers/footers to show page numbers.
+
 ## Slides Mode
 - Add front matter `mode: slides` to render a deck instead of a document.
 - Each H1 (`#`) starts a new slide.
