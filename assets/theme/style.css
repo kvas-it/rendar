@@ -205,6 +205,26 @@ th, td {
   text-align: left;
 }
 
+.front-matter-table {
+  margin-top: 0;
+  font-size: 0.9rem;
+}
+
+.front-matter-table th,
+.front-matter-table td {
+  vertical-align: top;
+}
+
+.front-matter-table th {
+  background: #f7f7f7;
+}
+
+.front-matter-table th:first-child,
+.front-matter-table td:first-child {
+  white-space: nowrap;
+  width: 1%;
+}
+
 .csv-preview {
   max-width: 100%;
 }

@@ -17,6 +17,7 @@ pub enum DocMode {
 #[derive(Default)]
 struct FrontMatter {
     mode: Option<String>,
+    entries: Vec<(String, String)>,
 }
 
 impl FrontMatter {
@@ -65,17 +66,29 @@ pub fn render_markdown_file(
         .with_context(|| format!("Failed to read markdown file {}", path.display()))?;
     let (front_matter, content) = parse_front_matter(&markdown);
     if front_matter.is_slides() {
-            let (html, warnings) =
-                markdown_to_slides_with_rewrites(content, path, input_root, index_dirs);
+        let (html, warnings) = markdown_to_slides_with_rewrites(
+            content,
+            path,
+            input_root,
+            index_dirs,
+            None,
+        );
         Ok(RenderedPage {
             html,
             warnings,
             mode: DocMode::Slides,
         })
     } else {
+        let front_matter_table = front_matter_table_html(&front_matter);
         let (html, warnings) = markdown_to_html_with_rewrites(content, path, input_root, index_dirs);
+        let html = rewrite_mermaid_blocks(&html);
+        let html = if let Some(table_html) = front_matter_table {
+            format!("{table_html}{html}")
+        } else {
+            html
+        };
         Ok(RenderedPage {
-            html: rewrite_mermaid_blocks(&html),
+            html,
             warnings,
             mode: DocMode::Document,
         })
@@ -117,16 +130,55 @@ fn parse_front_matter(markdown: &str) -> (FrontMatter, &str) {
             continue;
         }
         if let Some((key, value)) = line.split_once(':') {
-            if key.trim() == "mode" {
-                let value = value.trim().trim_matches(&['"', '\''][..]);
-                if !value.is_empty() {
-                    front_matter.mode = Some(value.to_ascii_lowercase());
-                }
+            let key = key.trim();
+            if key.is_empty() {
+                continue;
+            }
+            let value = value.trim().trim_matches(&['"', '\''][..]);
+            front_matter
+                .entries
+                .push((key.to_string(), value.to_string()));
+            if key == "mode" && !value.is_empty() {
+                front_matter.mode = Some(value.to_ascii_lowercase());
             }
         }
     }
 
     (front_matter, &markdown[end_offset..])
+}
+
+fn escape_html(input: &str) -> String {
+    let mut escaped = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+fn front_matter_table_html(front_matter: &FrontMatter) -> Option<String> {
+    if front_matter.entries.is_empty() {
+        return None;
+    }
+    let mut html = String::new();
+    html.push_str(
+        r#"<table class="front-matter-table"><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>"#,
+    );
+    for (key, value) in &front_matter.entries {
+        html.push_str("<tr><td>");
+        html.push_str(&escape_html(key));
+        html.push_str("</td><td>");
+        html.push_str(&escape_html(value));
+        html.push_str("</td></tr>");
+    }
+    html.push_str("</tbody></table>");
+    Some(html)
 }
 
 fn rewrite_mermaid_blocks(html: &str) -> String {
@@ -195,6 +247,7 @@ fn markdown_to_slides_with_rewrites(
     source_path: &Path,
     input_root: &Path,
     index_dirs: &std::collections::HashSet<PathBuf>,
+    front_matter_table: Option<&str>,
 ) -> (String, Vec<String>) {
     let options = markdown_options(false);
     let mut warnings = Vec::new();
@@ -261,19 +314,33 @@ fn markdown_to_slides_with_rewrites(
         slides.push(Vec::new());
     }
 
-    let slide_count = slides.len();
+    let mut slide_count = slides.len();
+    if front_matter_table.is_some() {
+        slide_count += 1;
+    }
     let mut html_output = String::new();
     html_output.push_str(&format!(
         r#"<div class="slides-root" data-slide-count="{}" tabindex="0">"#,
         slide_count
     ));
 
+    let mut slide_offset = 0usize;
+    if let Some(table_html) = front_matter_table {
+        html_output.push_str(
+            r#"<section class="slide is-active" id="slide-1" data-slide="1">"#,
+        );
+        html_output.push_str(table_html);
+        html_output.push_str("</section>");
+        slide_offset = 1;
+    }
+
     for (idx, events) in slides.into_iter().enumerate() {
         let mut slide_html = String::new();
         html::push_html(&mut slide_html, events.into_iter());
         let slide_html = rewrite_mermaid_blocks(&slide_html);
-        let active_class = if idx == 0 { " is-active" } else { "" };
-        let hidden_attr = if idx == 0 {
+        let slide_index = idx + slide_offset;
+        let active_class = if slide_index == 0 { " is-active" } else { "" };
+        let hidden_attr = if slide_index == 0 {
             ""
         } else {
             r#" aria-hidden="true""#
@@ -281,8 +348,8 @@ fn markdown_to_slides_with_rewrites(
         html_output.push_str(&format!(
             r#"<section class="slide{}" id="slide-{}" data-slide="{}"{}>"#,
             active_class,
-            idx + 1,
-            idx + 1,
+            slide_index + 1,
+            slide_index + 1,
             hidden_attr
         ));
         html_output.push_str(&slide_html);
@@ -594,11 +661,54 @@ graph TD;
     }
 
     #[test]
+    fn renders_front_matter_table_before_heading() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let markdown = "---\ntitle: Example\nowner: \"Jane Doe\"\n---\n# Heading\n";
+        let path = root.path().join("note.md");
+        std::fs::write(&path, markdown).expect("write markdown");
+        let index_dirs = std::collections::HashSet::new();
+
+        let rendered =
+            render_markdown_file(&path, root.path(), &index_dirs).expect("render markdown");
+        assert_eq!(rendered.mode, DocMode::Document);
+        let table_index = rendered
+            .html
+            .find("front-matter-table")
+            .expect("front matter table");
+        let heading_index = rendered.html.find("<h1>").expect("heading");
+        assert!(table_index < heading_index);
+        assert!(rendered.html.contains("<td>title</td>"));
+        assert!(rendered.html.contains("<td>Example</td>"));
+        assert!(rendered.html.contains("<td>owner</td>"));
+        assert!(rendered.html.contains("<td>Jane Doe</td>"));
+    }
+
+    #[test]
+    fn front_matter_table_adds_slide() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let markdown = "---\nmode: slides\nowner: Jane\n---\n# Deck\n";
+        let path = root.path().join("deck.md");
+        std::fs::write(&path, markdown).expect("write markdown");
+        let index_dirs = std::collections::HashSet::new();
+
+        let rendered =
+            render_markdown_file(&path, root.path(), &index_dirs).expect("render markdown");
+        assert_eq!(rendered.mode, DocMode::Slides);
+        assert!(rendered.html.contains(r#"data-slide-count="1""#));
+        assert!(!rendered.html.contains("front-matter-table"));
+    }
+
+    #[test]
     fn splits_slides_on_h1() {
         let markdown = "# One\n\nIntro\n\n# Two\n\nMore\n";
         let index_dirs = std::collections::HashSet::new();
-        let (html, _warnings) =
-            markdown_to_slides_with_rewrites(markdown, Path::new("."), Path::new("."), &index_dirs);
+        let (html, _warnings) = markdown_to_slides_with_rewrites(
+            markdown,
+            Path::new("."),
+            Path::new("."),
+            &index_dirs,
+            None,
+        );
         assert!(html.contains(r#"data-slide-count="2""#));
         assert!(html.contains(r#"id="slide-1""#));
         assert!(html.contains(r#"id="slide-2""#));
