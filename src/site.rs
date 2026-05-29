@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use globset::GlobSet;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use walkdir::WalkDir;
 
 pub struct RenderOptions<'a> {
@@ -211,6 +211,44 @@ pub fn is_excluded_path(path: &Path, input: &Path, excludes: Option<&GlobSet>) -
     excludes.is_match(rel_path)
 }
 
+pub fn is_ignored_path(path: &Path, input: &Path, excludes: Option<&GlobSet>) -> bool {
+    is_in_dot_directory(path, input) || is_excluded_path(path, input, excludes)
+}
+
+fn is_in_dot_directory(path: &Path, input: &Path) -> bool {
+    if path == input {
+        return false;
+    }
+    let rel_path = match path.strip_prefix(input) {
+        Ok(rel) => rel,
+        Err(_) => return false,
+    };
+    if rel_path.as_os_str().is_empty() {
+        return false;
+    }
+
+    let include_last = path.is_dir();
+    let mut components = rel_path.components().peekable();
+    while let Some(component) = components.next() {
+        let is_last = components.peek().is_none();
+        if is_last && !include_last {
+            break;
+        }
+        if let Component::Normal(name) = component
+            && is_dot_dir_name(name)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_dot_dir_name(name: &OsStr) -> bool {
+    name.to_str()
+        .map(|name| name.starts_with('.') && name != "." && name != "..")
+        .unwrap_or(false)
+}
+
 fn is_readme(path: &Path) -> bool {
     path.file_stem()
         .and_then(OsStr::to_str)
@@ -317,6 +355,9 @@ fn walk_entries<'a>(
             let path = entry.path();
             if path == input {
                 return true;
+            }
+            if entry.file_type().is_dir() && is_dot_dir_name(entry.file_name()) {
+                return false;
             }
             !is_excluded_path(path, input, excludes)
         })
@@ -707,6 +748,42 @@ mod tests {
         assert!(!output_dir.path().join("private/secret.html").exists());
         assert!(!output_dir.path().join("private/asset.txt").exists());
         assert!(output_dir.path().join("docs/index.html").exists());
+    }
+
+    #[test]
+    fn ignores_dot_directories() {
+        let input_dir = tempdir().expect("input tempdir");
+        let output_dir = tempdir().expect("output tempdir");
+
+        let docs_dir = input_dir.path().join("docs");
+        std::fs::create_dir_all(&docs_dir).expect("docs dir");
+        std::fs::write(docs_dir.join("index.md"), "# Docs").expect("docs");
+
+        let hidden_dir = input_dir.path().join(".obsidian");
+        std::fs::create_dir_all(&hidden_dir).expect("hidden dir");
+        std::fs::write(hidden_dir.join("note.md"), "# Hidden").expect("hidden markdown");
+        std::fs::write(hidden_dir.join("cache.json"), "{}").expect("hidden asset");
+
+        std::fs::write(input_dir.path().join(".visible.md"), "# Visible").expect("dotfile");
+
+        let template = Template::built_in();
+        build_site(
+            input_dir.path(),
+            output_dir.path(),
+            &RenderOptions {
+                live_reload: false,
+                heartbeat: false,
+                template: &template,
+                exclude: None,
+                csv_max_rows: None,
+            },
+        )
+        .expect("build site");
+
+        assert!(output_dir.path().join("docs/index.html").exists());
+        assert!(output_dir.path().join(".visible.html").exists());
+        assert!(!output_dir.path().join(".obsidian/note.html").exists());
+        assert!(!output_dir.path().join(".obsidian/cache.json").exists());
     }
 
     #[test]

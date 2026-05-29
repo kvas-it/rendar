@@ -212,13 +212,13 @@ fn run_preview(
     let template = resolve_template(template, config.as_ref());
     let template = load_template(template)?;
     let excludes = resolve_excludes(exclude, config.as_ref())?;
-    if let Some(start_page) = start_page.as_ref() {
-        if site::is_excluded_path(start_page, &input, excludes.as_ref()) {
-            return Err(anyhow::anyhow!(
-                "Start page {} is excluded by pattern",
-                start_page.display()
-            ));
-        }
+    if let Some(start_page) = start_page.as_ref()
+        && site::is_ignored_path(start_page, &input, excludes.as_ref())
+    {
+        return Err(anyhow::anyhow!(
+            "Start page {} is ignored",
+            start_page.display()
+        ));
     }
     let temp_dir = tempfile::tempdir().context("Failed to create preview directory")?;
     let output = temp_dir.path().to_path_buf();
