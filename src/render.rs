@@ -236,9 +236,10 @@ fn markdown_to_html_with_rewrites(
         }),
         _ => event,
     });
+    let parser = assign_heading_ids(parser);
 
     let mut html_output = String::new();
-    html::push_html(&mut html_output, parser);
+    html::push_html(&mut html_output, parser.into_iter());
     (html_output, warnings)
 }
 
@@ -271,6 +272,7 @@ fn markdown_to_slides_with_rewrites(
         }),
         _ => event,
     });
+    let parser = assign_heading_ids(parser);
 
     let mut slides: Vec<Vec<Event>> = Vec::new();
     let mut current: Vec<Event> = Vec::new();
@@ -363,6 +365,104 @@ fn markdown_to_slides_with_rewrites(
     html_output.push_str("</div>");
 
     (html_output, warnings)
+}
+
+fn assign_heading_ids<'a>(parser: impl IntoIterator<Item = Event<'a>>) -> Vec<Event<'a>> {
+    let mut events: Vec<Event<'a>> = parser.into_iter().collect();
+    let mut used_ids = std::collections::HashSet::new();
+
+    for event in &events {
+        if let Event::Start(Tag::Heading { id: Some(id), .. }) = event {
+            used_ids.insert(id.to_string());
+        }
+    }
+
+    let mut idx = 0;
+    while idx < events.len() {
+        if heading_needs_id(&events[idx])
+            && let Some(end_idx) = heading_end_index(&events, idx + 1)
+        {
+            let text = heading_text(&events[idx + 1..end_idx]);
+            if let Some(slug) = unique_heading_slug(&text, &mut used_ids) {
+                set_heading_id(&mut events[idx], slug);
+            }
+            idx = end_idx;
+        }
+        idx += 1;
+    }
+
+    events
+}
+
+fn set_heading_id(event: &mut Event, slug: String) {
+    if let Event::Start(Tag::Heading { id, .. }) = event {
+        *id = Some(CowStr::from(slug));
+    }
+}
+
+fn heading_needs_id(event: &Event) -> bool {
+    matches!(event, Event::Start(Tag::Heading { id: None, .. }))
+}
+
+fn heading_end_index(events: &[Event], start_idx: usize) -> Option<usize> {
+    events[start_idx..]
+        .iter()
+        .position(|event| matches!(event, Event::End(TagEnd::Heading(_))))
+        .map(|offset| start_idx + offset)
+}
+
+fn heading_text(events: &[Event]) -> String {
+    let mut text = String::new();
+    for event in events {
+        match event {
+            Event::Text(value) | Event::Code(value) => text.push_str(value.as_ref()),
+            Event::SoftBreak | Event::HardBreak => text.push(' '),
+            _ => {}
+        }
+    }
+    text
+}
+
+fn unique_heading_slug(
+    text: &str,
+    used_ids: &mut std::collections::HashSet<String>,
+) -> Option<String> {
+    let base = slugify_heading(text);
+    if base.is_empty() {
+        return None;
+    }
+
+    let mut candidate = base.clone();
+    let mut suffix = 1usize;
+    while used_ids.contains(&candidate) {
+        candidate = format!("{base}-{suffix}");
+        suffix += 1;
+    }
+    used_ids.insert(candidate.clone());
+    Some(candidate)
+}
+
+fn slugify_heading(text: &str) -> String {
+    let mut slug = String::new();
+    let mut previous_was_dash = false;
+
+    for ch in text.trim().chars() {
+        if ch.is_alphanumeric() {
+            for lower in ch.to_lowercase() {
+                slug.push(lower);
+            }
+            previous_was_dash = false;
+        } else if !previous_was_dash && !slug.is_empty() {
+            slug.push('-');
+            previous_was_dash = true;
+        }
+    }
+
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+
+    slug
 }
 
 fn rewrite_link_dest<'a>(
@@ -675,7 +775,7 @@ graph TD;
             .html
             .find("front-matter-table")
             .expect("front matter table");
-        let heading_index = rendered.html.find("<h1>").expect("heading");
+        let heading_index = rendered.html.find("<h1").expect("heading");
         assert!(table_index < heading_index);
         assert!(rendered.html.contains("<td>title</td>"));
         assert!(rendered.html.contains("<td>Example</td>"));
@@ -831,6 +931,69 @@ graph TD;
             markdown_to_html_with_rewrites(markdown, Path::new("."), Path::new("."), &std::collections::HashSet::new());
         assert!(warnings.is_empty());
         assert!(html.contains(r#"#part"#));
+    }
+
+    #[test]
+    fn adds_generated_heading_ids() {
+        let markdown = "# Hello, World!\n\n## `Code` & More\n";
+        let index_dirs = std::collections::HashSet::new();
+        let (html, warnings) =
+            markdown_to_html_with_rewrites(markdown, Path::new("."), Path::new("."), &index_dirs);
+        assert!(warnings.is_empty());
+        assert!(html.contains(r#"<h1 id="hello-world">Hello, World!</h1>"#));
+        assert!(html.contains(r#"<h2 id="code-more"><code>Code</code> &amp; More</h2>"#));
+    }
+
+    #[test]
+    fn makes_duplicate_heading_ids_unique() {
+        let markdown = "# Repeat\n\n## Repeat\n\n### Repeat\n";
+        let index_dirs = std::collections::HashSet::new();
+        let (html, warnings) =
+            markdown_to_html_with_rewrites(markdown, Path::new("."), Path::new("."), &index_dirs);
+        assert!(warnings.is_empty());
+        assert!(html.contains(r#"<h1 id="repeat">Repeat</h1>"#));
+        assert!(html.contains(r#"<h2 id="repeat-1">Repeat</h2>"#));
+        assert!(html.contains(r#"<h3 id="repeat-2">Repeat</h3>"#));
+    }
+
+    #[test]
+    fn preserves_explicit_heading_ids_and_avoids_collisions() {
+        let markdown = "# Repeat {#repeat}\n\n## Repeat\n";
+        let index_dirs = std::collections::HashSet::new();
+        let (html, warnings) =
+            markdown_to_html_with_rewrites(markdown, Path::new("."), Path::new("."), &index_dirs);
+        assert!(warnings.is_empty());
+        assert!(html.contains(r#"<h1 id="repeat">Repeat</h1>"#));
+        assert!(html.contains(r#"<h2 id="repeat-1">Repeat</h2>"#));
+    }
+
+    #[test]
+    fn reserves_explicit_heading_ids_before_generating_ids() {
+        let markdown = "# Repeat\n\n## Other {#repeat}\n";
+        let index_dirs = std::collections::HashSet::new();
+        let (html, warnings) =
+            markdown_to_html_with_rewrites(markdown, Path::new("."), Path::new("."), &index_dirs);
+        assert!(warnings.is_empty());
+        assert!(html.contains(r#"<h1 id="repeat-1">Repeat</h1>"#));
+        assert!(html.contains(r#"<h2 id="repeat">Other</h2>"#));
+    }
+
+    #[test]
+    fn adds_heading_ids_inside_slides() {
+        let markdown = "# One\n\nIntro\n\n# One\n\nMore\n";
+        let index_dirs = std::collections::HashSet::new();
+        let (html, warnings) = markdown_to_slides_with_rewrites(
+            markdown,
+            Path::new("."),
+            Path::new("."),
+            &index_dirs,
+            None,
+        );
+        assert!(warnings.is_empty());
+        assert!(html.contains(r#"id="slide-1""#));
+        assert!(html.contains(r#"id="slide-2""#));
+        assert!(html.contains(r#"<h1 id="one">One</h1>"#));
+        assert!(html.contains(r#"<h1 id="one-1">One</h1>"#));
     }
 
     #[test]
