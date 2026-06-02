@@ -33,16 +33,47 @@ impl Template {
         extra_head: Option<&str>,
         extra_body: Option<&str>,
     ) -> String {
-        let mut html = self.raw.clone();
-        html = html.replace("{{title}}", title);
-        html = html.replace("{{content}}", content);
-        html = html.replace("{{nav}}", nav);
-        html = html.replace("{{breadcrumbs}}", breadcrumbs);
-        html = html.replace("{{style}}", &self.style);
-        html = html.replace("{{extra_head}}", extra_head.unwrap_or(""));
-        html = html.replace("{{extra_body}}", extra_body.unwrap_or(""));
-        html
+        render_template(
+            &self.raw,
+            &[
+                ("{{title}}", title),
+                ("{{content}}", content),
+                ("{{nav}}", nav),
+                ("{{breadcrumbs}}", breadcrumbs),
+                ("{{style}}", &self.style),
+                ("{{extra_head}}", extra_head.unwrap_or("")),
+                ("{{extra_body}}", extra_body.unwrap_or("")),
+            ],
+        )
     }
+}
+
+fn render_template(template: &str, replacements: &[(&str, &str)]) -> String {
+    let mut html = String::with_capacity(template.len());
+    let mut rest = template;
+
+    while let Some((index, placeholder, replacement)) = next_placeholder(rest, replacements) {
+        html.push_str(&rest[..index]);
+        html.push_str(replacement);
+        rest = &rest[index + placeholder.len()..];
+    }
+
+    html.push_str(rest);
+    html
+}
+
+fn next_placeholder<'a>(
+    input: &str,
+    replacements: &'a [(&'a str, &'a str)],
+) -> Option<(usize, &'a str, &'a str)> {
+    replacements
+        .iter()
+        .filter_map(|(placeholder, replacement)| {
+            input
+                .find(placeholder)
+                .map(|index| (index, *placeholder, *replacement))
+        })
+        .min_by_key(|(index, _, _)| *index)
 }
 
 fn warn_missing_placeholders(template: &str, path: &Path) {
@@ -74,7 +105,7 @@ fn missing_placeholders(template: &str) -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::missing_placeholders;
+    use super::{missing_placeholders, Template};
 
     #[test]
     fn detects_missing_placeholders() {
@@ -83,5 +114,27 @@ mod tests {
         assert!(missing.contains(&"{{content}}"));
         assert!(missing.contains(&"{{nav}}"));
         assert!(missing.contains(&"{{breadcrumbs}}"));
+    }
+
+    #[test]
+    fn does_not_replace_placeholders_inside_rendered_values() {
+        let template = Template {
+            raw: "<html>{{content}}<style>{{style}}</style></html>".to_string(),
+            style: "body {}".to_string(),
+        };
+
+        let html = template.render(
+            "Title",
+            "<p><code>{{style}}</code> <code>{{nav}}</code></p>",
+            "<nav>Nav</nav>",
+            "<span>Home</span>",
+            None,
+            None,
+        );
+
+        assert!(html.contains("<style>body {}</style>"));
+        assert!(html.contains("<code>{{style}}</code>"));
+        assert!(html.contains("<code>{{nav}}</code>"));
+        assert!(!html.contains("<code><nav>Nav</nav></code>"));
     }
 }
